@@ -1,0 +1,518 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glarace — 3D дрифт</title>
+<style>
+  :root { --accent: #ff3b6b; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; background: #0b0e14; overflow: hidden;
+               font-family: -apple-system, system-ui, sans-serif; color: #fff; }
+  #app { position: fixed; inset: 0; }
+  canvas { display: block; touch-action: none; }
+
+  .hud { position: fixed; top: 16px; left: 16px; pointer-events: none; user-select: none; }
+  .title { font-size: 22px; font-weight: 800; letter-spacing: 2px; text-shadow: 0 2px 8px #000; }
+  .title span { color: var(--accent); }
+  .row { margin-top: 10px; display: flex; gap: 14px; }
+  .stat { background: rgba(0,0,0,.4); border: 1px solid rgba(255,255,255,.14);
+          border-radius: 10px; padding: 8px 12px; min-width: 96px; backdrop-filter: blur(4px); }
+  .stat .k { font-size: 11px; opacity: .6; text-transform: uppercase; letter-spacing: 1px; }
+  .stat .v { font-size: 22px; font-weight: 700; margin-top: 2px; }
+
+  .drift { position: fixed; top: 24%; left: 50%; transform: translateX(-50%);
+           font-size: 40px; font-weight: 900; letter-spacing: 1px; color: var(--accent);
+           text-shadow: 0 2px 14px rgba(0,0,0,.7); opacity: 0; transition: opacity .1s;
+           pointer-events: none; user-select: none; }
+  .drift .mult { color: #ffd166; font-size: 24px; }
+
+  .help { position: fixed; bottom: 16px; left: 16px; opacity: .85; font-size: 13px; line-height: 1.7;
+          background: rgba(0,0,0,.4); border: 1px solid rgba(255,255,255,.14);
+          border-radius: 10px; padding: 10px 14px; pointer-events: none; user-select: none;
+          backdrop-filter: blur(4px); }
+  .help b { color: var(--accent); }
+  kbd { background:#1c2230; border:1px solid #3a4150; border-bottom-width:2px;
+        border-radius:4px; padding:1px 6px; font-size:12px; }
+
+  #loader { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+            flex-direction: column; gap: 14px; background: #0b0e14; z-index: 10; text-align: center; padding: 20px; }
+  #loader .lg { font-size: 26px; font-weight: 800; letter-spacing: 3px; }
+  #loader .lg span { color: var(--accent); }
+  #loader .sub { opacity: .6; font-size: 14px; max-width: 340px; }
+  .spinner { width: 34px; height: 34px; border: 3px solid rgba(255,255,255,.15);
+             border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+  <div id="app"></div>
+
+  <div class="hud">
+    <div class="title">GLA<span>RACE</span></div>
+    <div class="row">
+      <div class="stat"><div class="k">Скорость</div><div class="v"><span id="speed">0</span> км/ч</div></div>
+      <div class="stat"><div class="k">Очки</div><div class="v" id="score">0</div></div>
+      <div class="stat"><div class="k">Рекорд</div><div class="v" id="best">0</div></div>
+    </div>
+  </div>
+
+  <div class="drift" id="driftPop">DRIFT <span class="mult" id="mult">x1</span></div>
+
+  <div class="help">
+    <b>Управление:</b> <kbd>↑</kbd> газ &nbsp; <kbd>↓</kbd> тормоз/назад &nbsp;
+    <kbd>←</kbd> <kbd>→</kbd> руль &nbsp; <kbd>Пробел</kbd> ручник &nbsp; <kbd>R</kbd> заново<br>
+    <b>Дрифт:</b> входи в поворот на скорости, зажми ручник и подруливай — держи занос, чтобы копить очки. Сбивай конусы.
+  </div>
+
+  <div id="loader">
+    <div class="spinner"></div>
+    <div class="lg">GLA<span>RACE</span></div>
+    <div class="sub">Загружаем 3D-движок… Если надолго завис — проверь интернет: движок Three.js подтягивается из сети.</div>
+  </div>
+
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+</script>
+
+<script type="module">
+// ==========================================================================
+//  Glarace — 3D дрифт. Камера за машиной, реалистичная физика заноса.
+//  Один файл. Движок: Three.js (грузится из сети).
+//  Делаем со Львом. Числа в блоке TUNE ниже можно менять и смотреть результат.
+// ==========================================================================
+import * as THREE from 'three';
+
+const loaderEl = document.getElementById('loader');
+
+// ---- настройки физики и ощущения (МЕНЯТЬ ЗДЕСЬ) ---------------------------
+const TUNE = {
+  mass: 1350,          // масса, кг
+  inertia: 2100,       // момент инерции (насколько «неохотно» машина поворачивается)
+  a: 1.35, b: 1.35,    // расстояние от центра до передней/задней оси, м
+  cgHeight: 0.55,      // высота центра тяжести (для переноса веса)
+  mu: 1.55,            // сцепление шин (больше = держит крепче)
+  muHandbrakeRear: 0.55, // сцепление задних колёс на ручнике (мало = срывает в занос)
+  Cf: 52000, Cr: 56000,  // жёсткость увода перед/зад (Н/рад)
+  engineForce: 9500,   // сила двигателя
+  reverseForce: 4200,  // сила заднего хода
+  brakeForce: 13000,   // сила тормоза
+  cDrag: 2.6,          // аэродинамика (ограничивает максималку)
+  cRR: 46,             // сопротивление качению
+  steerMax: 0.55,      // макс. угол руля на месте, рад
+  steerMin: 0.11,      // макс. угол руля на большой скорости
+  steerSpeed: 3.2,     // как быстро крутится руль
+};
+
+// ---- Three.js базовая сцена ----------------------------------------------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.getElementById('app').appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x8fb7d6);
+scene.fog = new THREE.Fog(0x8fb7d6, 90, 320);
+
+const camera = new THREE.PerspectiveCamera(62, window.innerWidth/window.innerHeight, 0.1, 1000);
+camera.position.set(0, 6, 12);
+
+// свет
+const hemi = new THREE.HemisphereLight(0xbfe3ff, 0x40372e, 0.9);
+scene.add(hemi);
+const sun = new THREE.DirectionalLight(0xffffff, 2.0);
+sun.position.set(40, 70, 20);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.near = 1; sun.shadow.camera.far = 220;
+sun.shadow.camera.left = -60; sun.shadow.camera.right = 60;
+sun.shadow.camera.top = 60; sun.shadow.camera.bottom = -60;
+sun.shadow.bias = -0.0004;
+scene.add(sun);
+scene.add(sun.target);
+
+// ---- земля (асфальт) ------------------------------------------------------
+const ARENA = 220; // половина стороны площадки
+function makeAsphaltTexture() {
+  const c = document.createElement('canvas'); c.width = c.height = 512;
+  const g = c.getContext('2d');
+  g.fillStyle = '#2b2f37'; g.fillRect(0,0,512,512);
+  // крапинки асфальта
+  for (let i=0;i<4000;i++){
+    const v = 20 + Math.floor(Math.random()*40);
+    g.fillStyle = `rgba(${v},${v+4},${v+8},0.5)`;
+    g.fillRect(Math.random()*512, Math.random()*512, 2, 2);
+  }
+  // разметка-сетка
+  g.strokeStyle = 'rgba(255,255,255,0.06)'; g.lineWidth = 3;
+  g.strokeRect(0,0,512,512);
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(ARENA/6, ARENA/6);
+  t.anisotropy = 8;
+  return t;
+}
+const groundMat = new THREE.MeshStandardMaterial({ map: makeAsphaltTexture(), roughness: 0.95, metalness: 0.0 });
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(ARENA*2, ARENA*2), groundMat);
+ground.rotation.x = -Math.PI/2;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// круг для дрифта в центре
+const ring = new THREE.Mesh(
+  new THREE.RingGeometry(28, 29.2, 64),
+  new THREE.MeshBasicMaterial({ color: 0xff3b6b, transparent: true, opacity: 0.5, side: THREE.DoubleSide })
+);
+ring.rotation.x = -Math.PI/2; ring.position.y = 0.02;
+scene.add(ring);
+
+// бортики по краю площадки
+const wallMat = new THREE.MeshStandardMaterial({ color: 0x3a4150, roughness: 0.8 });
+const wallGeo = new THREE.BoxGeometry(ARENA*2, 2, 1.2);
+for (const [rx, rz, ry] of [[0,-ARENA,0],[0,ARENA,0],[-ARENA,0,Math.PI/2],[ARENA,0,Math.PI/2]]) {
+  const w = new THREE.Mesh(wallGeo, wallMat);
+  w.position.set(rx, 1, rz); w.rotation.y = ry; w.castShadow = true; w.receiveShadow = true;
+  scene.add(w);
+}
+
+// ---- машина (из простых деталей) -----------------------------------------
+function buildCar() {
+  const car = new THREE.Group();
+  const paint = new THREE.MeshStandardMaterial({ color: 0xff3b6b, roughness: 0.35, metalness: 0.3 });
+  const glass = new THREE.MeshStandardMaterial({ color: 0x0c1220, roughness: 0.1, metalness: 0.6 });
+  const dark  = new THREE.MeshStandardMaterial({ color: 0x111418, roughness: 0.7 });
+
+  const body = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.6, 4.3), paint);
+  body.position.y = 0.55; body.castShadow = true; car.add(body);
+
+  const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.55, 2.0), paint);
+  cabin.position.set(0, 1.0, -0.2); cabin.castShadow = true; car.add(cabin);
+
+  const win = new THREE.Mesh(new THREE.BoxGeometry(1.72, 0.5, 1.7), glass);
+  win.position.set(0, 1.02, -0.2); car.add(win);
+
+  const spoiler = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.1, 0.4), dark);
+  spoiler.position.set(0, 1.05, -2.0); car.add(spoiler);
+  for (const sx of [-0.85, 0.85]) {
+    const stalk = new THREE.Mesh(new THREE.BoxGeometry(0.1,0.35,0.1), dark);
+    stalk.position.set(sx, 0.85, -2.0); car.add(stalk);
+  }
+
+  // колёса
+  const wheelGeo = new THREE.CylinderGeometry(0.42, 0.42, 0.34, 18);
+  const wheelMat = new THREE.MeshStandardMaterial({ color: 0x14161a, roughness: 0.85 });
+  const wheels = [];
+  const wp = [[-0.95,-1.45],[0.95,-1.45],[-0.95,1.5],[0.95,1.5]]; // зад-лево, зад-право, перед-лево, перед-право
+  for (const [wx, wz] of wp) {
+    const w = new THREE.Mesh(wheelGeo, wheelMat);
+    w.rotation.z = Math.PI/2; w.castShadow = true;
+    const pivot = new THREE.Group();
+    pivot.position.set(wx, 0.42, wz); pivot.add(w);
+    car.add(pivot); wheels.push({ pivot, mesh: w });
+  }
+  return { group: car, wheels };
+}
+const carObj = buildCar();
+scene.add(carObj.group);
+
+// ---- следы шин (пул плоских квадратов) ------------------------------------
+const SKID_MAX = 1200;
+const skidGeo = new THREE.PlaneGeometry(0.35, 0.7);
+const skidMat = new THREE.MeshBasicMaterial({ color: 0x0a0a0c, transparent: true, opacity: 0.4,
+                                              depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2 });
+const skidMesh = new THREE.InstancedMesh(skidGeo, skidMat, SKID_MAX);
+// ориентацию каждого следа задаём в его матрице (см. addSkid), общий меш не крутим
+skidMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+scene.add(skidMesh);
+let skidIndex = 0;
+const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _s = new THREE.Vector3(1,1,1), _p = new THREE.Vector3();
+for (let i=0;i<SKID_MAX;i++){ _m.makeScale(0,0,0); skidMesh.setMatrixAt(i,_m); }
+function addSkid(x, z, yaw) {
+  _p.set(x, 0.02, z);
+  _q.setFromEuler(new THREE.Euler(-Math.PI/2, 0, -yaw)); // лежит на земле, повёрнут по машине
+  _m.compose(_p, _q, _s);
+  skidMesh.setMatrixAt(skidIndex, _m);
+  skidIndex = (skidIndex + 1) % SKID_MAX;
+  skidMesh.instanceMatrix.needsUpdate = true;
+}
+
+// ---- дым (спрайты) --------------------------------------------------------
+function smokeTexture() {
+  const c = document.createElement('canvas'); c.width = c.height = 64;
+  const g = c.getContext('2d');
+  const grd = g.createRadialGradient(32,32,2,32,32,32);
+  grd.addColorStop(0,'rgba(255,255,255,0.9)');
+  grd.addColorStop(1,'rgba(255,255,255,0)');
+  g.fillStyle = grd; g.fillRect(0,0,64,64);
+  return new THREE.CanvasTexture(c);
+}
+const SMOKE_MAX = 160;
+const smokeMat = new THREE.SpriteMaterial({ map: smokeTexture(), color: 0xdddddd, transparent: true, opacity: 0.5, depthWrite: false });
+const smokes = [];
+for (let i=0;i<SMOKE_MAX;i++){
+  const s = new THREE.Sprite(smokeMat.clone());
+  s.visible = false; s.userData.life = 0; scene.add(s); smokes.push(s);
+}
+let smokeIdx = 0;
+function puff(x, z) {
+  const s = smokes[smokeIdx]; smokeIdx = (smokeIdx+1)%SMOKE_MAX;
+  s.position.set(x + (Math.random()-0.5), 0.4, z + (Math.random()-0.5));
+  s.scale.setScalar(1.2 + Math.random());
+  s.userData.life = 1; s.userData.vy = 1.5 + Math.random();
+  s.material.opacity = 0.5; s.visible = true;
+}
+function updateSmoke(dt) {
+  for (const s of smokes) {
+    if (!s.visible) continue;
+    s.userData.life -= dt * 0.8;
+    if (s.userData.life <= 0) { s.visible = false; continue; }
+    s.position.y += s.userData.vy * dt;
+    s.scale.addScalar(dt * 2.2);
+    s.material.opacity = 0.5 * s.userData.life;
+  }
+}
+
+// ---- конусы ---------------------------------------------------------------
+const cones = [];
+const coneGeo = new THREE.ConeGeometry(0.4, 1.0, 16);
+function spawnCones() {
+  for (const c of cones) scene.remove(c.mesh);
+  cones.length = 0;
+  const R = 28.6;
+  for (let i=0;i<24;i++){
+    const ang = (i/24)*Math.PI*2;
+    const m = new THREE.Mesh(coneGeo, new THREE.MeshStandardMaterial({ color: 0xff8a1e, roughness: 0.6 }));
+    m.position.set(Math.cos(ang)*R, 0.5, Math.sin(ang)*R); m.castShadow = true;
+    scene.add(m);
+    cones.push({ mesh: m, vx:0, vz:0, down:false });
+  }
+}
+spawnCones();
+
+// ==========================================================================
+//  Физика машины (модель велосипеда с уводом шин)
+// ==========================================================================
+const carState = { x:0, z:0, yaw:0, vx:0, vz:0, omega:0, axPrev:0 };
+function resetCar() {
+  carState.x=0; carState.z=0; carState.yaw=0; carState.vx=0; carState.vz=0; carState.omega=0; carState.axPrev=0;
+  for (let i=0;i<SKID_MAX;i++){ _m.makeScale(0,0,0); skidMesh.setMatrixAt(i,_m); }
+  skidMesh.instanceMatrix.needsUpdate = true;
+  spawnCones();
+  score=0; combo=1; driftTime=0;
+}
+
+// ввод
+const keys = {};
+const DRIVE = ['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' ','w','a','s','d','ц','ф','ы','в'];
+addEventListener('keydown', e => {
+  keys[e.key]=true;
+  if (e.key==='r'||e.key==='R'||e.key==='к') resetCar();
+  if (DRIVE.includes(e.key)) e.preventDefault();
+});
+addEventListener('keyup', e => keys[e.key]=false);
+const K = (...k) => k.some(x=>keys[x]);
+
+let steer = 0; // сглаженный угол руля (-1..1)
+
+function stepPhysics(dt) {
+  const T = TUNE;
+  const throttle = K('ArrowUp','w','ц') ? 1 : 0;
+  const brakeIn  = K('ArrowDown','s','ы') ? 1 : 0;
+  const steerIn  = (K('ArrowLeft','a','ф')?1:0) - (K('ArrowRight','d','в')?1:0);
+  const handbrake = K(' ');
+
+  // руль сглаживаем и уменьшаем на скорости
+  steer += (steerIn - steer) * Math.min(1, T.steerSpeed*dt);
+  const speed = Math.hypot(carState.vx, carState.vz);
+  const steerMax = T.steerMax - (T.steerMax - T.steerMin) * Math.min(1, speed/45);
+  const delta = steer * steerMax;
+
+  // скорость в системе машины (вдоль/поперёк корпуса)
+  const cs = Math.cos(carState.yaw), sn = Math.sin(carState.yaw);
+  let vLong =  carState.vx*cs + carState.vz*sn;   // вперёд
+  let vLat  = -carState.vx*sn + carState.vz*cs;   // вбок (занос)
+
+  const vLongSafe = Math.max(Math.abs(vLong), 0.6) * (vLong<0?-1:1);
+
+  // углы увода передних/задних колёс
+  let alphaF = Math.atan2(vLat + T.a*carState.omega, Math.abs(vLongSafe)) - delta*Math.sign(vLongSafe);
+  let alphaR = Math.atan2(vLat - T.b*carState.omega, Math.abs(vLongSafe));
+  alphaF = Math.max(-1.1, Math.min(1.1, alphaF));
+  alphaR = Math.max(-1.1, Math.min(1.1, alphaR));
+
+  // перенос веса вперёд/назад (по продольному ускорению прошлого кадра)
+  const L = T.a + T.b;
+  const g = 9.81;
+  const dW = (T.cgHeight / L) * T.mass * carState.axPrev;
+  let loadF = Math.max(500, T.mass*g*T.b/L - dW);
+  let loadR = Math.max(500, T.mass*g*T.a/L + dW);
+
+  // боковые силы шин (линейно, с насыщением по сцеплению)
+  const muR = handbrake ? T.muHandbrakeRear : T.mu;
+  let Fyf = -T.Cf * alphaF;  Fyf = Math.max(-T.mu*loadF,  Math.min(T.mu*loadF,  Fyf));
+  let Fyr = -T.Cr * alphaR;  Fyr = Math.max(-muR*loadR,   Math.min(muR*loadR,   Fyr));
+
+  // продольная сила (двигатель / тормоз / сопротивление)
+  let Flong = 0;
+  if (throttle) Flong += T.engineForce * throttle;
+  if (brakeIn) { if (vLong > 0.2) Flong -= T.brakeForce; else Flong -= T.reverseForce; }
+  if (handbrake) Flong -= 2500 * (vLong>0?1:-1); // ручник немного тормозит зад
+  Flong -= T.cDrag * vLong * Math.abs(vLong);
+  Flong -= T.cRR * vLong;
+
+  // суммарные силы в системе машины
+  const Fx = Flong - Fyf*Math.sin(delta);
+  const Fy = Fyf*Math.cos(delta) + Fyr;
+
+  const ax = Fx / T.mass;
+  const ay = Fy / T.mass;
+  carState.axPrev = ax;
+
+  // интегрируем с учётом вращения корпуса
+  vLong += (ax + carState.omega*vLat) * dt;
+  vLat  += (ay - carState.omega*vLong) * dt;
+
+  // момент рыскания -> угловая скорость
+  const torque = T.a*Fyf*Math.cos(delta) - T.b*Fyr;
+  carState.omega += (torque / T.inertia) * dt;
+  carState.omega = Math.max(-4, Math.min(4, carState.omega));
+
+  // на очень малой скорости гасим дрожь
+  if (Math.abs(vLong) < 0.4 && !throttle && !brakeIn) { vLong*=0.6; vLat*=0.6; carState.omega*=0.6; }
+
+  carState.yaw += carState.omega * dt;
+
+  // обратно в мировые координаты
+  const cs2 = Math.cos(carState.yaw), sn2 = Math.sin(carState.yaw);
+  carState.vx = vLong*cs2 - vLat*sn2;
+  carState.vz = vLong*sn2 + vLat*cs2;
+  carState.x += carState.vx * dt;
+  carState.z += carState.vz * dt;
+
+  // стены
+  const lim = ARENA - 3;
+  if (carState.x < -lim){ carState.x=-lim; carState.vx*=-0.3; }
+  if (carState.x >  lim){ carState.x= lim; carState.vx*=-0.3; }
+  if (carState.z < -lim){ carState.z=-lim; carState.vz*=-0.3; }
+  if (carState.z >  lim){ carState.z= lim; carState.vz*=-0.3; }
+
+  // --- дрифт: угол между «куда смотрит» и «куда едет» ---
+  const slip = Math.abs(vLat) / (Math.abs(vLong) + 3);
+  const drifting = speed > 8 && slip > 0.28;
+  if (drifting) {
+    driftTime += dt;
+    combo = Math.min(5, 1 + driftTime*0.7);
+    score += speed * slip * dt * 1.6 * combo;
+    // следы и дым от задних колёс
+    const rlx = carState.x - cs2*1.45 - sn2*0.95, rlz = carState.z - sn2*1.45 + cs2*0.95;
+    const rrx = carState.x - cs2*1.45 + sn2*0.95, rrz = carState.z - sn2*1.45 - cs2*0.95;
+    addSkid(rlx, rlz, carState.yaw); addSkid(rrx, rrz, carState.yaw);
+    if (Math.random() < 0.6) { puff(rlx, rlz); puff(rrx, rrz); }
+  } else {
+    driftTime = 0; combo = 1;
+  }
+  window._drifting = drifting; window._combo = combo; window._speed = speed;
+
+  // конусы
+  for (const c of cones) {
+    const dx = c.mesh.position.x - carState.x, dz = c.mesh.position.z - carState.z;
+    const d = Math.hypot(dx, dz);
+    if (d < 1.8 && !c.down) {
+      const n = d||1;
+      c.vx = carState.vx*0.5 + dx/n*8; c.vz = carState.vz*0.5 + dz/n*8;
+      c.down = true; score += 50;
+    }
+    if (c.down) {
+      c.mesh.position.x += c.vx*dt; c.mesh.position.z += c.vz*dt;
+      c.vx *= (1-3*dt); c.vz *= (1-3*dt);
+      c.mesh.rotation.z = Math.min(c.mesh.rotation.z + dt*6, Math.PI/2); // падает набок
+    }
+  }
+}
+
+// ---- очки / HUD -----------------------------------------------------------
+let score=0, combo=1, driftTime=0;
+let best = Number(localStorage.getItem('glarace_best')||0);
+const el = { speed:document.getElementById('speed'), score:document.getElementById('score'),
+            best:document.getElementById('best'), pop:document.getElementById('driftPop'), mult:document.getElementById('mult') };
+el.best.textContent = Math.round(best);
+
+// ---- камера-погоня --------------------------------------------------------
+let camYaw = 0;
+function lerpAngle(a, b, t){ let d=((b-a+Math.PI)%(Math.PI*2))-Math.PI; return a + d*t; }
+
+function updateVisualAndCamera(dt) {
+  // ставим машину
+  carObj.group.position.set(carState.x, 0, carState.z);
+  carObj.group.rotation.y = -carState.yaw + Math.PI/2; // модель носом по +Z, выравниваем
+  // передние колёса поворачиваем на руль, все крутятся
+  const roll = window._speed ? window._speed*dt/0.42 : 0;
+  carObj.wheels.forEach((w, i) => {
+    if (i>=2) w.pivot.rotation.y = steer * 0.5; // передние
+    w.mesh.rotation.x += roll;
+  });
+
+  // камера следует за направлением движения (видно занос сбоку)
+  const speed = window._speed || 0;
+  const travelYaw = speed > 3 ? Math.atan2(carState.vz, carState.vx) : carState.yaw;
+  camYaw = lerpAngle(camYaw, travelYaw, Math.min(1, 3*dt));
+  const back = 11 + Math.min(speed*0.15, 5);
+  const cx = carState.x - Math.cos(camYaw)*back;
+  const cz = carState.z - Math.sin(camYaw)*back;
+  camera.position.lerp(new THREE.Vector3(cx, 5.5, cz), Math.min(1, 4*dt));
+  camera.lookAt(carState.x + Math.cos(camYaw)*4, 1.2, carState.z + Math.sin(camYaw)*4);
+
+  // солнце-тень едет за машиной
+  sun.position.set(carState.x+40, 70, carState.z+20);
+  sun.target.position.set(carState.x, 0, carState.z);
+
+  // HUD
+  el.speed.textContent = Math.round(speed*3.6);
+  el.score.textContent = Math.round(score);
+  if (score > best){ best=score; localStorage.setItem('glarace_best', best); }
+  el.best.textContent = Math.round(best);
+  if (window._drifting){ el.pop.style.opacity=1; el.mult.textContent='x'+(window._combo).toFixed(1); }
+  else el.pop.style.opacity=0;
+}
+
+// ==========================================================================
+//  Главный цикл — фиксированный шаг физики для стабильности
+// ==========================================================================
+let last = performance.now(), acc = 0;
+const STEP = 1/120;
+function loop(now) {
+  let dt = (now - last)/1000; last = now;
+  if (dt > 0.1) dt = 0.1;
+  acc += dt;
+  let guard = 0;
+  while (acc >= STEP && guard < 8) { stepPhysics(STEP); acc -= STEP; guard++; }
+  updateSmoke(dt);
+  updateVisualAndCamera(dt);
+  renderer.render(scene, camera);
+  requestAnimationFrame(loop);
+}
+
+addEventListener('resize', () => {
+  camera.aspect = window.innerWidth/window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+loaderEl.style.display = 'none';
+requestAnimationFrame(loop);
+</script>
+
+<script>
+// если модуль не загрузился (нет интернета / CDN недоступен) — покажем подсказку
+setTimeout(() => {
+  const l = document.getElementById('loader');
+  if (l && l.style.display !== 'none') {
+    l.querySelector('.sub').innerHTML =
+      'Не удалось загрузить 3D-движок. Проверь интернет и обнови страницу.<br>Игра тянет Three.js из сети — лучше всего открывать по ссылке (GitHub Pages).';
+  }
+}, 6000);
+</script>
+</body>
+</html>
