@@ -68,20 +68,16 @@
   <div id="loader">
     <div class="spinner"></div>
     <div class="lg">GLA<span>RACE</span></div>
-    <div class="sub">Загружаем 3D-движок… Если надолго завис — проверь интернет: движок Three.js подтягивается из сети.</div>
+    <div class="sub">Загружаем 3D-движок…</div>
   </div>
-
-<script type="importmap">
-{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
-</script>
 
 <script type="module">
 // ==========================================================================
 //  Glarace — 3D дрифт. Камера за машиной, реалистичная физика заноса.
-//  Один файл. Движок: Three.js (грузится из сети).
+//  Движок Three.js лежит рядом в папке vendor — из интернета ничего не грузится.
 //  Делаем со Львом. Числа в блоке TUNE ниже можно менять и смотреть результат.
 // ==========================================================================
-import * as THREE from 'three';
+import * as THREE from './vendor/three.module.js';
 
 const loaderEl = document.getElementById('loader');
 
@@ -505,12 +501,12 @@ requestAnimationFrame(loop);
 </script>
 
 <script>
-// если модуль не загрузился (нет интернета / CDN недоступен) — покажем подсказку
+// если модуль не запустился — покажем подсказку (обычно: игру открыли как файл, а не по ссылке)
 setTimeout(() => {
   const l = document.getElementById('loader');
   if (l && l.style.display !== 'none') {
     l.querySelector('.sub').innerHTML =
-      'Не удалось загрузить 3D-движок. Проверь интернет и обнови страницу.<br>Игра тянет Three.js из сети — лучше всего открывать по ссылке (GitHub Pages).';
+      'Не удалось запустить 3D-движок.<br>Открой игру по ссылке: <b>https://glarace-game.github.io/</b>';
   }
 }, 6000);
 </script>
