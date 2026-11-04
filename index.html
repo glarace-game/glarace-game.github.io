@@ -146,6 +146,7 @@
   </div>
   <div class="topbtns" id="topbtns">
     <button class="ui" id="soundBtn">Звук вкл</button>
+    <button class="ui" id="fxBtn">Эффекты</button>
     <button class="ui" id="placeBtn">Ферма ▶</button>
     <button class="ui" id="garageBtn">Гараж</button>
     <button class="ui" id="resetBtn">Заново (R)</button>
@@ -198,6 +199,9 @@
     <div class="sub">Загружаем 3D-движок…</div>
   </div>
 
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.module.js", "three/addons/": "./vendor/jsm/" } }
+</script>
 <script type="module">
 // ==========================================================================
 //  Glarace — 3D дрифт (стиль CarX Drift Racing).
@@ -206,6 +210,11 @@
 //  Числа физики — в TUNE. Делаем со Львом.
 // ==========================================================================
 import * as THREE from './vendor/three.module.js';
+// пост-обработка (аддоны движка лежат локально в vendor/jsm, без интернета)
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 // ---------- сохранение настроек тачки ----------
 const DEFAULT = { model: 0, color: '#ff3b6b', decal: 0, track: 0, power: 1, grip: 1, handling: 1 };
@@ -275,6 +284,14 @@ function envEquirect(){
 const _pmrem=new THREE.PMREMGenerator(renderer);
 const _envtex=envEquirect(); const _envRT=_pmrem.fromEquirectangular(_envtex);
 scene.environment=_envRT.texture; _envtex.dispose(); _pmrem.dispose();
+
+// ---------- пост-обработка: свечение (bloom) ----------
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloomPass = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.38, 0.5, 0.85); // сила, радиус, порог — крути эти числа
+composer.addPass(bloomPass);
+composer.addPass(new OutputPass());
+let useBloom = !IS_MOBILE;   // на телефоне по умолчанию выкл (чтобы не тормозило) — включается кнопкой «Эффекты»
 
 // ---------- текстуры ----------
 function cnv(w, h) { const c = document.createElement('canvas'); c.width=w; c.height=h; return c; }
@@ -1018,6 +1035,9 @@ soundBtn.onclick=()=>{ soundOn=!soundOn; soundBtn.textContent=soundOn?'Звук 
 const placeBtn=document.getElementById('placeBtn');
 placeBtn.onclick=()=>{ if(mode!=='play') return; if(panelOpen) closePanel(); if(place==='track') enterFarm(); else enterTrackPlace(); };
 document.getElementById('fpClose').onclick=closePanel;
+const fxBtn=document.getElementById('fxBtn');
+fxBtn.textContent = useBloom ? 'Эффекты вкл' : 'Эффекты выкл';
+fxBtn.onclick=()=>{ useBloom=!useBloom; fxBtn.textContent=useBloom?'Эффекты вкл':'Эффекты выкл'; };
 // сенсорные кнопки → те же клавиши, что и на клавиатуре
 document.querySelectorAll('.tk').forEach(btn=>{ const k=btn.getAttribute('data-k');
   const on=e=>{ e.preventDefault(); keys[k]=true; btn.classList.add('act'); };
@@ -1034,10 +1054,10 @@ function loop(now){
   if(mode==='play'){ acc+=dt; let n=0; while(acc>=STEP&&n<8){ if(!panelOpen) stepPhysics(STEP); acc-=STEP;n++;} updatePlay(dt); }
   else { updateGarage(dt); }
   updateSmoke(dt);
-  renderer.render(scene,camera);
+  if(useBloom) composer.render(); else renderer.render(scene,camera);
   requestAnimationFrame(loop);
 }
-addEventListener('resize',()=>{ camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth,innerHeight); });
+addEventListener('resize',()=>{ camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth,innerHeight); composer.setSize(innerWidth,innerHeight); bloomPass.setSize(innerWidth,innerHeight); });
 
 document.getElementById('loader').style.display='none';
 requestAnimationFrame(loop);
