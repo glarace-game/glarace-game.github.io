@@ -63,6 +63,23 @@
   .tk.hb { background: rgba(255,209,102,.18); }
   .tk.act { background: var(--accent); }
 
+  /* ---- панель усадьбы (ангар / ворота знаний) ---- */
+  #farmPanel { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; z-index: 9; }
+  #farmPanel .fp { background: var(--panel); border: 1px solid rgba(255,255,255,.16); border-radius: 14px;
+                   padding: 22px; width: 400px; max-width: 92vw; backdrop-filter: blur(10px); }
+  .fphead { font-size: 20px; font-weight: 800; margin-bottom: 14px; }
+  .fphead span { color: var(--accent); }
+  .fpq { font-size: 16px; margin-bottom: 14px; line-height: 1.4; }
+  .fpans { display: block; width: 100%; margin: 8px 0; padding: 12px; border-radius: 10px;
+           border: 1px solid rgba(255,255,255,.18); background: rgba(255,255,255,.06); color: #fff; font: inherit;
+           cursor: pointer; text-align: left; }
+  .fpans:hover { border-color: var(--accent); }
+  .fpans:disabled { opacity: .5; cursor: default; }
+  .fpmsg { margin-top: 12px; font-size: 14px; line-height: 1.5; }
+  .fpmsg b { color: #ffd166; }
+  #fpClose { margin-top: 16px; width: 100%; padding: 12px; border: none; border-radius: 10px;
+             background: var(--accent); color: #fff; font: inherit; font-weight: 700; cursor: pointer; }
+
   /* ---- гараж ---- */
   #garage { position: fixed; inset: 0; display: flex; justify-content: flex-end; z-index: 6; }
   .gpanel { width: 380px; max-width: 92vw; height: 100%; overflow-y: auto;
@@ -152,6 +169,13 @@
       <button class="tk gas" data-k="ArrowUp">ГАЗ</button>
     </div>
   </div>
+
+  <!-- панель усадьбы (ангар / ворота знаний) -->
+  <div id="farmPanel"><div class="fp">
+    <div class="fphead" id="fpTitle"></div>
+    <div id="fpBody"></div>
+    <button id="fpClose">Закрыть</button>
+  </div></div>
 
   <!-- гараж -->
   <div id="garage">
@@ -637,6 +661,7 @@ let steer=0, score=0, combo=1, driftTime=0;
 let best=Number(localStorage.getItem('glarace_best')||0);
 // где находимся: 'track' (гонка) или 'farm' (усадьба). Границы езды зависят от места.
 let place='track', placeCenter={x:0,z:0}, placeRadius=290;
+let panelOpen=false, farmZone=null;   // открыта ли панель (ангар/ворота) и в какой зоне усадьбы машина
 
 function placeAtStart(){
   const p=trackCurve.getPointAt(0), tan=trackCurve.getTangentAt(0);
@@ -781,9 +806,17 @@ function updatePlay(dt){
   fxFlash.style.opacity=win_drift?Math.min(0.28+win_combo*0.12,0.8):0;
 
   if(place==='track') updateLaps();
-  if(performance.now()>trigLock){   // въезд/выезд за рулём через арки
+  if(performance.now()>trigLock){   // въезд/выезд и зоны усадьбы
     if(place==='track'){ if(Math.hypot(car.x-farmEntryTrig.x,car.z-farmEntryTrig.z)<farmEntryTrig.r) enterFarm(); }
-    else if(place==='farm'){ if(Math.hypot(car.x-farmExitTrig.x,car.z-farmExitTrig.z)<farmExitTrig.r) enterTrackPlace(); }
+    else if(place==='farm' && !panelOpen){
+      if(Math.hypot(car.x-farmExitTrig.x,car.z-farmExitTrig.z)<farmExitTrig.r){ enterTrackPlace(); }
+      else {
+        const inH=Math.hypot(car.x-HANGAR.x,car.z-HANGAR.z)<HANGAR.r, inG=Math.hypot(car.x-GATE.x,car.z-GATE.z)<GATE.r;
+        const z=inH?'hangar':inG?'gate':null;
+        if(z && z!==farmZone){ farmZone=z; car.vx=car.vz=car.omega=0; (z==='hangar'?openHangar:openGate)(); }
+        if(!z) farmZone=null;
+      }
+    }
   }
   audioUpdate();
   el.speed.textContent=Math.round(win_speed*3.6);
@@ -899,6 +932,43 @@ function enterTrackPlace(){
   if(placeBtn) placeBtn.textContent='Ферма ▶';
 }
 
+// ---------- усадьба: ангар (выбор машины) и ворота знаний (вопрос+награда) ----------
+const QUESTIONS=[
+  {q:'Какая передача даёт более резкий старт?', a:['Первая (низкая)','Пятая (высокая)'], c:0, why:'Низкая передача даёт колёсам больше силы — быстрый разгон.'},
+  {q:'Когда шина держит дорогу крепче?', a:['Когда катится','Когда скользит в заносе'], c:0, why:'Трение покоя сильнее трения скольжения: катиться в повороте быстрее, чем дрифтить.'},
+  {q:'Две машины с одним мотором — какая разгоняется быстрее?', a:['Лёгкая','Тяжёлая'], c:0, why:'Ускорение = сила ÷ масса: чем легче, тем быстрее.'},
+  {q:'Зачем гоночной машине антикрыло?', a:['Прижимать к дороге','Для красоты'], c:0, why:'Воздух прижимает машину — шины держат крепче в быстрых поворотах.'},
+  {q:'Скорость выросла в 2 раза — сопротивление воздуха вырастет…', a:['В 4 раза','В 2 раза'], c:0, why:'Сопротивление растёт как квадрат скорости: 2×2 = 4.'},
+];
+function openPanel(){ panelOpen=true; document.getElementById('farmPanel').style.display='flex'; }
+function closePanel(){ panelOpen=false; document.getElementById('farmPanel').style.display='none'; }
+function openHangar(){
+  document.getElementById('fpTitle').innerHTML='Ангар — <span>выбор машины</span>';
+  const body=document.getElementById('fpBody'); body.innerHTML='';
+  const row=document.createElement('div'); row.className='opts';
+  MODELS.forEach((mo,i)=>{ const b=document.createElement('div'); b.className='opt'+(cfg.model===i?' on':''); b.textContent=mo.name;
+    b.onclick=()=>{ cfg.model=i; saveCfg(); buildCar(); openHangar(); }; row.appendChild(b); });
+  body.appendChild(row);
+  const hint=document.createElement('div'); hint.className='fpmsg'; hint.textContent='Выбери машину и жми «Закрыть» — поедешь на ней.'; body.appendChild(hint);
+  openPanel();
+}
+function openGate(){
+  const qi=(cfg.gateQ||0)%QUESTIONS.length, Q=QUESTIONS[qi];
+  document.getElementById('fpTitle').innerHTML='Ворота <span>знаний</span>';
+  const body=document.getElementById('fpBody'); body.innerHTML='';
+  const qd=document.createElement('div'); qd.className='fpq'; qd.textContent=Q.q; body.appendChild(qd);
+  const msg=document.createElement('div'); msg.className='fpmsg';
+  Q.a.forEach((ans,i)=>{ const b=document.createElement('button'); b.className='fpans'; b.textContent=ans;
+    b.onclick=()=>{
+      if(i===Q.c){ msg.innerHTML='Верно! '+Q.why+'<br><b>Награда: +100 очков</b>'; score+=100; cfg.gateQ=qi+1; saveCfg();
+        body.querySelectorAll('.fpans').forEach(x=>x.disabled=true); }
+      else { msg.innerHTML='Почти. '+Q.why+'<br>Попробуй ещё.'; }
+    };
+    body.appendChild(b); });
+  body.appendChild(msg);
+  openPanel();
+}
+
 // ---------- гараж: интерфейс ----------
 function renderGarage(){
   const om=document.getElementById('optModel'); om.innerHTML='';
@@ -932,7 +1002,8 @@ document.getElementById('resetBtn').onclick=resetRun;
 const soundBtn=document.getElementById('soundBtn');
 soundBtn.onclick=()=>{ soundOn=!soundOn; soundBtn.textContent=soundOn?'Звук вкл':'Звук выкл'; if(soundOn) audioResume(); audioMaster(soundOn&&mode==='play'?0.6:0); };
 const placeBtn=document.getElementById('placeBtn');
-placeBtn.onclick=()=>{ if(mode!=='play') return; if(place==='track') enterFarm(); else enterTrackPlace(); };
+placeBtn.onclick=()=>{ if(mode!=='play') return; if(panelOpen) closePanel(); if(place==='track') enterFarm(); else enterTrackPlace(); };
+document.getElementById('fpClose').onclick=closePanel;
 // сенсорные кнопки → те же клавиши, что и на клавиатуре
 document.querySelectorAll('.tk').forEach(btn=>{ const k=btn.getAttribute('data-k');
   const on=e=>{ e.preventDefault(); keys[k]=true; btn.classList.add('act'); };
@@ -946,7 +1017,7 @@ document.querySelectorAll('.tk').forEach(btn=>{ const k=btn.getAttribute('data-k
 let last=performance.now(), acc=0; const STEP=1/120;
 function loop(now){
   let dt=(now-last)/1000; last=now; if(dt>0.1)dt=0.1;
-  if(mode==='play'){ acc+=dt; let n=0; while(acc>=STEP&&n<8){stepPhysics(STEP);acc-=STEP;n++;} updatePlay(dt); }
+  if(mode==='play'){ acc+=dt; let n=0; while(acc>=STEP&&n<8){ if(!panelOpen) stepPhysics(STEP); acc-=STEP;n++;} updatePlay(dt); }
   else { updateGarage(dt); }
   updateSmoke(dt);
   renderer.render(scene,camera);
