@@ -272,16 +272,51 @@ function skyDome() {
 }
 skyDome();
 
-function grassTex() {
-  const c = cnv(256,256), g = c.getContext('2d');
-  g.fillStyle = '#4f7a3a'; g.fillRect(0,0,256,256);
-  for (let i=0;i<5000;i++){ const v=40+Math.random()*70;
-    g.fillStyle = `rgba(${v*0.5|0},${v|0},${v*0.4|0},0.5)`; g.fillRect(Math.random()*256,Math.random()*256,3,3); }
-  const t = new THREE.CanvasTexture(c); t.wrapS=t.wrapT=THREE.RepeatWrapping; t.repeat.set(80,80); return t;
+// ---------- рельеф: холмы вокруг ровной игровой зоны (Стадия 2) ----------
+const FLAT_R=300, HILL_RAMP=170;   // внутри FLAT_R земля ровная (дорога плоская), дальше — холмы
+function terrainHeight(x,z){
+  const d=Math.hypot(x,z), fall=Math.max(0,Math.min(1,(d-FLAT_R)/HILL_RAMP));
+  if(fall<=0) return 0;
+  const h=Math.sin(x*0.012)*Math.cos(z*0.011)*6 + Math.sin(x*0.03+1.5)*Math.cos(z*0.025)*2.2 + Math.sin((x+z)*0.02)*2.0;
+  return h*fall*fall;
 }
-const grass = new THREE.Mesh(new THREE.PlaneGeometry(1800,1800),
-  new THREE.MeshStandardMaterial({ map:grassTex(), roughness:1 }));
-grass.rotation.x = -Math.PI/2; grass.receiveShadow = true; scene.add(grass);
+const terrainGroup=new THREE.Group(); scene.add(terrainGroup);
+function buildTerrain(){
+  disposeGroup(terrainGroup);
+  const SEG=IS_MOBILE?90:130, SIZE=1800;
+  const geo=new THREE.PlaneGeometry(SIZE,SIZE,SEG,SEG), pos=geo.attributes.position;
+  const col=new Float32Array(pos.count*3), c=new THREE.Color();
+  const low=new THREE.Color('#3f6a33'), mid=new THREE.Color('#5d8a3e'), hi=new THREE.Color('#8f8a5c'), top=new THREE.Color('#bcb39a');
+  const f1=new THREE.Color('#c9b34a'), f2=new THREE.Color('#9a86c4'), f3=new THREE.Color('#b98b4e');
+  for(let i=0;i<pos.count;i++){
+    const wx=pos.getX(i), wz=-pos.getY(i), h=terrainHeight(wx,wz);
+    pos.setZ(i,h);
+    const t=Math.max(0,Math.min(1,h/9));
+    if(t<0.5) c.copy(low).lerp(mid,t/0.5); else c.copy(mid).lerp(hi,(t-0.5)/0.5);
+    if(t>0.85) c.lerp(top,(t-0.85)/0.15);
+    c.offsetHSL(0,0,(Math.sin(wx*0.3)*Math.sin(wz*0.3))*0.03);
+    if(h<2){ const fm=Math.sin(wx*0.011+2)*Math.cos(wz*0.013-1);   // поля — цветные пятна на равнине
+      if(fm>0.6){ const p=((Math.floor((wx-wz)*0.01)%3)+3)%3; c.lerp(p===0?f1:p===1?f2:f3,0.5); } }
+    col[i*3]=c.r; col[i*3+1]=c.g; col[i*3+2]=c.b;
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(col,3));
+  geo.computeVertexNormals();
+  const mesh=new THREE.Mesh(geo, new THREE.MeshStandardMaterial({vertexColors:true, roughness:1}));
+  mesh.rotation.x=-Math.PI/2; mesh.receiveShadow=true; terrainGroup.add(mesh);
+}
+buildTerrain();
+// ---------- пруд с отражением неба ----------
+function buildPond(){
+  const px=34, pz=22, pr=16;
+  const water=new THREE.Mesh(new THREE.CircleGeometry(pr,40),
+    new THREE.MeshStandardMaterial({color:'#2d5f6e', roughness:0.12, metalness:0, envMapIntensity:1.6, transparent:true, opacity:0.92}));
+  water.rotation.x=-Math.PI/2; water.position.set(px,0.06,pz); terrainGroup.add(water);
+  const reedMat=new THREE.MeshStandardMaterial({color:'#5a7a3a',roughness:1});
+  for(let i=0;i<44;i++){ const a=Math.random()*Math.PI*2, rr=pr-0.4+Math.random()*1.6;
+    const reed=new THREE.Mesh(new THREE.CylinderGeometry(0.03,0.07,1+Math.random(),4), reedMat);
+    reed.position.set(px+Math.cos(a)*rr, 0.5, pz+Math.sin(a)*rr); terrainGroup.add(reed); }
+}
+buildPond();
 
 // ---------- трассы (переключаются в гараже) ----------
 const TRACKS = [
@@ -353,26 +388,49 @@ buildMountains();
 // ---------- деревья (инстансы), не на трассе ----------
 function buildTrees() {
   disposeGroup(treesGroup);
-  const N=120, trunkG=new THREE.CylinderGeometry(0.28,0.36,2.2,6), foliageG=new THREE.ConeGeometry(1.7,3.6,7);
-  const trunkM=new THREE.MeshStandardMaterial({color:'#6b4a2b',roughness:1});
-  const foliM=new THREE.MeshStandardMaterial({color:'#3c6b34',roughness:1,flatShading:true});
-  const trunks=new THREE.InstancedMesh(trunkG,trunkM,N), folis=new THREE.InstancedMesh(foliageG,foliM,N);
-  folis.castShadow=true;
-  const m=new THREE.Matrix4(), q=new THREE.Quaternion(), pos=new THREE.Vector3(), scl=new THREE.Vector3();
-  let placed=0, tries=0;
   const onTrack=(x,z)=>{ for(const c of trackCenters){ const dx=x-c.x,dz=z-c.y; if(dx*dx+dz*dz<20*20) return true; } return false; };
-  while(placed<N && tries<N*20){
-    tries++;
-    const a=Math.random()*Math.PI*2, d=40+Math.random()*300;
-    const x=Math.cos(a)*d, z=Math.sin(a)*d;
-    if(onTrack(x,z)) continue;
-    const s=0.8+Math.random()*1.2;
-    q.setFromAxisAngle(new THREE.Vector3(0,1,0), Math.random()*6);
-    pos.set(x,1.1*s,z); scl.set(s,s,s); m.compose(pos,q,scl); trunks.setMatrixAt(placed,m);
-    pos.set(x,(2.2+1.4)*s,z); m.compose(pos,q,scl); folis.setMatrixAt(placed,m);
-    placed++;
+  const nearPond=(x,z)=> (x-34)*(x-34)+(z-22)*(z-22) < 20*20;
+  const m=new THREE.Matrix4(), q=new THREE.Quaternion(), pos=new THREE.Vector3(), scl=new THREE.Vector3(), col=new THREE.Color();
+  const upY=a=>{ q.setFromAxisAngle(new THREE.Vector3(0,1,0), a); return q; };
+  const flag=im=>{ if(im.instanceColor) im.instanceColor.needsUpdate=true; im.instanceMatrix.needsUpdate=true; };
+
+  // стволы + кроны двух видов (хвоя-конус и лиственная-икосаэдр)
+  const trunkG=new THREE.CylinderGeometry(0.26,0.36,2.2,6), trunkM=new THREE.MeshStandardMaterial({color:'#6b4a2b',roughness:1});
+  const pineG=new THREE.ConeGeometry(1.7,3.8,7), leafG=new THREE.IcosahedronGeometry(1.9,0);
+  const greenM=()=>new THREE.MeshStandardMaterial({roughness:1,flatShading:true});
+  const NT=160, trunks=new THREE.InstancedMesh(trunkG,trunkM,NT),
+        pines=new THREE.InstancedMesh(pineG,greenM(),NT), leaves=new THREE.InstancedMesh(leafG,greenM(),NT);
+  pines.castShadow=true; leaves.castShadow=true;
+  let it=0,ip=0,il=0,tries=0;
+  while(it<NT && tries<NT*25){ tries++;
+    const a=Math.random()*Math.PI*2, d=50+Math.random()*640, x=Math.cos(a)*d, z=Math.sin(a)*d;
+    if(onTrack(x,z)||nearPond(x,z)) continue;
+    const gy=terrainHeight(x,z), s=0.8+Math.random()*1.3; upY(Math.random()*6);
+    pos.set(x,gy+1.1*s,z); scl.set(s,s,s); m.compose(pos,q,scl); trunks.setMatrixAt(it,m); it++;
+    if(Math.random()<0.5){ pos.set(x,gy+(2.2+1.5)*s,z); m.compose(pos,q,scl); pines.setMatrixAt(ip,m);
+      col.setHSL(0.30+Math.random()*0.08,0.42,0.26+Math.random()*0.12); pines.setColorAt(ip,col); ip++; }
+    else { pos.set(x,gy+(2.2+1.3)*s,z); m.compose(pos,q,scl); leaves.setMatrixAt(il,m);
+      col.setHSL(0.24+Math.random()*0.12,0.45,0.34+Math.random()*0.12); leaves.setColorAt(il,col); il++; }
   }
-  trunks.count=placed; folis.count=placed; treesGroup.add(trunks); treesGroup.add(folis);
+  trunks.count=it; pines.count=ip; leaves.count=il; flag(trunks); flag(pines); flag(leaves);
+  treesGroup.add(trunks,pines,leaves);
+
+  // кусты
+  const bushG=new THREE.IcosahedronGeometry(0.7,0), NB=90, bushes=new THREE.InstancedMesh(bushG,greenM(),NB);
+  let ib=0; tries=0;
+  while(ib<NB && tries<NB*25){ tries++; const a=Math.random()*Math.PI*2,d=30+Math.random()*660,x=Math.cos(a)*d,z=Math.sin(a)*d;
+    if(onTrack(x,z)||nearPond(x,z)) continue; const gy=terrainHeight(x,z),s=0.7+Math.random();
+    pos.set(x,gy+0.5*s,z); scl.set(s,s*0.8,s); m.compose(pos,upY(Math.random()*6),scl); bushes.setMatrixAt(ib,m);
+    col.setHSL(0.27+Math.random()*0.08,0.4,0.3+Math.random()*0.1); bushes.setColorAt(ib,col); ib++; }
+  bushes.count=ib; flag(bushes); treesGroup.add(bushes);
+
+  // камни
+  const rockG=new THREE.DodecahedronGeometry(0.8,0), rockM=new THREE.MeshStandardMaterial({color:'#8a8d92',roughness:1,flatShading:true});
+  const NR=60, rocks=new THREE.InstancedMesh(rockG,rockM,NR); let ir=0; tries=0;
+  while(ir<NR && tries<NR*25){ tries++; const a=Math.random()*Math.PI*2,d=40+Math.random()*660,x=Math.cos(a)*d,z=Math.sin(a)*d;
+    if(onTrack(x,z)) continue; const gy=terrainHeight(x,z),s=0.5+Math.random()*1.2;
+    pos.set(x,gy+0.3*s,z); scl.set(s,s*0.7,s); m.compose(pos,upY(Math.random()*6),scl); rocks.setMatrixAt(ir,m); ir++; }
+  rocks.count=ir; flag(rocks); treesGroup.add(rocks);
 }
 
 // ==========================================================================
@@ -660,8 +718,8 @@ function stepPhysics(dt){
   car.vx=vLong*cs2-vLat*sn2; car.vz=vLong*sn2+vLat*cs2;
   car.x+=car.vx*dt; car.z+=car.vz*dt;
 
-  const lim=760;
-  car.x=Math.max(-lim,Math.min(lim,car.x)); car.z=Math.max(-lim,Math.min(lim,car.z));
+  const lim=290; const dd=Math.hypot(car.x,car.z);   // держим машину на ровной земле (холмы — дальше)
+  if(dd>lim){ const k=lim/dd; car.x*=k; car.z*=k; car.vx*=0.4; car.vz*=0.4; }
 
   const slip=Math.abs(vLat)/(Math.abs(vLong)+3);
   const drifting=speed>7 && slip>T.driftSlip;
