@@ -128,6 +128,7 @@
     </div>
   </div>
   <div class="topbtns" id="topbtns">
+    <button class="ui" id="soundBtn">Звук вкл</button>
     <button class="ui" id="garageBtn">Гараж</button>
     <button class="ui" id="resetBtn">Заново (R)</button>
   </div>
@@ -440,6 +441,15 @@ function buildCar(){
   const win=new THREE.Mesh(new THREE.BoxGeometry(cw+0.02,ch*0.8,cl*0.86), glass);
   win.position.copy(cabin.position); car.add(win);
 
+  // спорт-силуэт: скошенное лобовое и заднее стекло + заниженный нос
+  const topY=cabin.position.y+ch/2, hoodY=body.position.y+bh/2;
+  const ws=new THREE.Mesh(new THREE.BoxGeometry(cw*0.94,0.05,Math.min(1.05,Math.max(0.8,ch*1.3))), glass);
+  ws.position.set(0,(topY+hoodY)/2+0.02, cz+cl/2+0.18); ws.rotation.x=-1.0; car.add(ws);     // лобовое
+  const bw2=new THREE.Mesh(new THREE.BoxGeometry(cw*0.94,0.05,Math.min(0.95,Math.max(0.7,ch*1.15))), glass);
+  bw2.position.set(0,(topY+hoodY)/2+0.02, cz-cl/2-0.16); bw2.rotation.x=0.95; car.add(bw2);   // заднее
+  const nose=new THREE.Mesh(new THREE.BoxGeometry(bw*0.92,bh*0.6,0.7), paint);
+  nose.position.set(0, body.position.y-bh*0.16, bl/2-0.12); nose.rotation.x=0.14; car.add(nose); // заниженный нос
+
   if(mdl.scoop){ const sc=new THREE.Mesh(new THREE.BoxGeometry(0.7,0.18,0.9),dark);
     sc.position.set(0, body.position.y+bh/2+0.06, bl*0.18); car.add(sc); }
   if(mdl.spoiler){
@@ -491,24 +501,55 @@ function addSkid(x,z,yaw){ _p.set(x,0.04,z); _e.set(-Math.PI/2,0,-yaw); _q.setFr
 function smokeTex(){ const c=cnv(64,64), g=c.getContext('2d');
   const gr=g.createRadialGradient(32,32,2,32,32,32); gr.addColorStop(0,'rgba(255,255,255,.9)'); gr.addColorStop(1,'rgba(255,255,255,0)');
   g.fillStyle=gr; g.fillRect(0,0,64,64); return new THREE.CanvasTexture(c); }
-const SMOKE_MAX=180, smokes=[]; const smokeBaseMat=new THREE.SpriteMaterial({map:smokeTex(),color:0xdedede,transparent:true,opacity:.5,depthWrite:false});
+const SMOKE_MAX=260, smokes=[]; const smokeBaseMat=new THREE.SpriteMaterial({map:smokeTex(),color:0xdedede,transparent:true,opacity:.5,depthWrite:false});
 for(let i=0;i<SMOKE_MAX;i++){ const s=new THREE.Sprite(smokeBaseMat.clone()); s.visible=false; scene.add(s); smokes.push(s); }
 let smokeI=0;
 function puff(x,z){ const s=smokes[smokeI]; smokeI=(smokeI+1)%SMOKE_MAX;
-  s.position.set(x+(Math.random()-.5),0.4,z+(Math.random()-.5)); s.scale.setScalar(1.2+Math.random());
-  s.material.opacity=.5; s.userData={life:1,vy:1.5+Math.random()}; s.visible=true; }
+  s.position.set(x+(Math.random()-.5)*1.2,0.4,z+(Math.random()-.5)*1.2); s.scale.setScalar(1.8+Math.random()*1.4);
+  s.material.opacity=.6; s.userData={life:1,vy:1.4+Math.random()}; s.visible=true; }
 function updateSmoke(dt){ for(const s of smokes){ if(!s.visible)continue; const u=s.userData; u.life-=dt*.8;
-  if(u.life<=0){s.visible=false;continue;} s.position.y+=u.vy*dt; s.scale.addScalar(dt*2.2); s.material.opacity=.5*u.life; } }
+  if(u.life<=0){s.visible=false;continue;} s.position.y+=u.vy*dt; s.scale.addScalar(dt*2.8); s.material.opacity=.6*u.life; } }
+
+// ---------- звук мотора (WebAudio, синтезом, без файлов) ----------
+let audio=null, soundOn=true;
+function initAudio(){
+  if(audio!==null) return audio;
+  const Ctx=window.AudioContext||window.webkitAudioContext; if(!Ctx){ audio=false; return audio; }
+  const ctx=new Ctx(); const master=ctx.createGain(); master.gain.value=0; master.connect(ctx.destination);
+  const o1=ctx.createOscillator(); o1.type='sawtooth';
+  const o2=ctx.createOscillator(); o2.type='square'; o2.detune.value=-10;
+  const lp=ctx.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=1100;
+  const eng=ctx.createGain(); eng.gain.value=0;
+  o1.connect(lp); o2.connect(lp); lp.connect(eng); eng.connect(master); o1.start(); o2.start();
+  const n=ctx.sampleRate*0.5|0, buf=ctx.createBuffer(1,n,ctx.sampleRate), d=buf.getChannelData(0);
+  for(let i=0;i<n;i++) d[i]=Math.random()*2-1;
+  const noise=ctx.createBufferSource(); noise.buffer=buf; noise.loop=true;
+  const bp=ctx.createBiquadFilter(); bp.type='bandpass'; bp.frequency.value=2200; bp.Q.value=2.2;
+  const scr=ctx.createGain(); scr.gain.value=0;
+  noise.connect(bp); bp.connect(scr); scr.connect(master); noise.start();
+  audio={ctx,master,o1,o2,lp,eng,scr}; return audio;
+}
+function audioMaster(v){ const a=initAudio(); if(a) a.master.gain.setTargetAtTime(v,a.ctx.currentTime,0.05); }
+function audioResume(){ const a=initAudio(); if(a && a.ctx.state==='suspended') a.ctx.resume(); }
+function audioUpdate(){
+  const a=audio; if(!a) return;
+  const t=a.ctx.currentTime, thr=K('ArrowUp','w','ц')?1:0, sp=win_speed;
+  const f=Math.max(45,Math.min(360, 48 + sp*8 + thr*28));          // обороты из скорости и газа
+  a.o1.frequency.setTargetAtTime(f,t,0.05); a.o2.frequency.setTargetAtTime(f*0.5,t,0.05);
+  a.lp.frequency.setTargetAtTime(650+sp*28+thr*500,t,0.04);
+  a.eng.gain.setTargetAtTime(0.05+thr*0.07+Math.min(sp/60,1)*0.05,t,0.08);
+  a.scr.gain.setTargetAtTime(win_drift?Math.min(0.09+win_combo*0.025,0.2):0,t,0.05);  // визг шин на дрифте
+}
 
 // ==========================================================================
 //  Физика (модель велосипеда с уводом шин) + тюнинг
 // ==========================================================================
 const TUNE = {
   mass:1350, inertia:2800, a:1.35, b:1.35, cgHeight:0.5,
-  mu:1.6, muHandbrakeRear:0.75, Cf:46000, Cr:62000,
+  mu:1.6, muHandbrakeRear:0.7, Cf:46000, Cr:62000,
   engineForce:9000, reverseForce:4000, brakeForce:13000,
   cDrag:2.6, cRR:46, steerMax:0.5, steerMin:0.1, steerSpeed:3.4,
-  yawDamp:2.2, omegaCap:2.6,
+  yawDamp:2.2, omegaCap:2.8, counterAssist:3.0, driftSlip:0.26,  // counterAssist — само выравнивание когда отпустил руль; driftSlip — порог заноса
 };
 const P_POWER=[1,1,1.28,1.6], P_GRIP=[1,1,1.12,1.26], P_HAND=[1,1,1.22,1.45];
 function tuned(){
@@ -609,6 +650,7 @@ function stepPhysics(dt){
   const torque=T.a*Fyf*Math.cos(delta)-T.b*Fyr;
   car.omega += (torque/T.inertia)*dt;
   car.omega -= car.omega*T.yawDamp*dt;              // гасим вращение — управляемее
+  if(steerIn===0 && hb===false) car.omega -= car.omega*T.counterAssist*dt;  // отпустил руль (без ручника) — машина сама выравнивается
   car.omega = Math.max(-T.omegaCap,Math.min(T.omegaCap,car.omega));
 
   if(Math.abs(vLong)<0.4 && !thr && !brk){ vLong*=0.6; vLat*=0.6; car.omega*=0.6; }
@@ -622,12 +664,13 @@ function stepPhysics(dt){
   car.x=Math.max(-lim,Math.min(lim,car.x)); car.z=Math.max(-lim,Math.min(lim,car.z));
 
   const slip=Math.abs(vLat)/(Math.abs(vLong)+3);
-  const drifting=speed>8 && slip>0.3;
+  const drifting=speed>7 && slip>T.driftSlip;
   if(drifting){
     driftTime+=dt; combo=Math.min(5,1+driftTime*0.7); score+=speed*slip*dt*1.6*combo;
     const rx=car.x-cs2*(T.b+0.1), rz=car.z-sn2*(T.b+0.1);
     addSkid(rx-sn2*0.8,rz+cs2*0.8,car.yaw); addSkid(rx+sn2*0.8,rz-cs2*0.8,car.yaw);
-    if(Math.random()<0.6){ puff(rx-sn2*0.8,rz+cs2*0.8); puff(rx+sn2*0.8,rz-cs2*0.8); }
+    puff(rx-sn2*0.8,rz+cs2*0.8); puff(rx+sn2*0.8,rz-cs2*0.8);           // дым каждый кадр — гуще
+    if(Math.random()<0.5){ puff(rx-sn2*0.5,rz+cs2*0.5); puff(rx+sn2*0.5,rz-cs2*0.5); }
   } else { driftTime=0; combo=1; }
   win_speed=speed; win_drift=drifting; win_combo=combo;
 }
@@ -665,6 +708,7 @@ function updatePlay(dt){
   fxFlash.style.opacity=win_drift?Math.min(0.28+win_combo*0.12,0.8):0;
 
   updateLaps();
+  audioUpdate();
   el.speed.textContent=Math.round(win_speed*3.6);
   el.score.textContent=Math.round(score);
   if(score>best){best=score; localStorage.setItem('glarace_best',best);}
@@ -688,11 +732,12 @@ let mode='garage';
 const garageEl=document.getElementById('garage'), hudEl=document.getElementById('hud'),
       topEl=document.getElementById('topbtns'), helpEl=document.getElementById('help');
 function toGarage(){ mode='garage'; garageEl.style.display='flex'; hudEl.style.display='none';
-  topEl.style.display='none'; helpEl.style.display='none'; fxEl.style.display='none'; touchWrap.style.display='none'; }
+  topEl.style.display='none'; helpEl.style.display='none'; fxEl.style.display='none'; touchWrap.style.display='none'; audioMaster(0); }
 function toPlay(){ mode='play'; T=tuned(); buildCar(); placeAtStart(); resetRun(); resetLaps();
   camYaw=car.yaw; camera.position.set(car.x-Math.cos(car.yaw)*12, 5.5, car.z-Math.sin(car.yaw)*12); // камеру сразу за машину
   garageEl.style.display='none'; hudEl.style.display='block'; topEl.style.display='flex';
-  helpEl.style.display=IS_MOBILE?'none':'block'; fxEl.style.display='block'; touchWrap.style.display=IS_MOBILE?'flex':'none'; }
+  helpEl.style.display=IS_MOBILE?'none':'block'; fxEl.style.display='block'; touchWrap.style.display=IS_MOBILE?'flex':'none';
+  audioResume(); audioMaster(soundOn?0.6:0); }
 
 // ---------- гараж: интерфейс ----------
 function renderGarage(){
@@ -724,6 +769,8 @@ renderGarage();
 document.getElementById('playBtn').onclick=toPlay;
 document.getElementById('garageBtn').onclick=()=>{ buildCar(); toGarage(); };
 document.getElementById('resetBtn').onclick=resetRun;
+const soundBtn=document.getElementById('soundBtn');
+soundBtn.onclick=()=>{ soundOn=!soundOn; soundBtn.textContent=soundOn?'Звук вкл':'Звук выкл'; if(soundOn) audioResume(); audioMaster(soundOn&&mode==='play'?0.6:0); };
 // сенсорные кнопки → те же клавиши, что и на клавиатуре
 document.querySelectorAll('.tk').forEach(btn=>{ const k=btn.getAttribute('data-k');
   const on=e=>{ e.preventDefault(); keys[k]=true; btn.classList.add('act'); };
