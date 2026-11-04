@@ -394,35 +394,47 @@ function buildTrees() {
   const upY=a=>{ q.setFromAxisAngle(new THREE.Vector3(0,1,0), a); return q; };
   const flag=im=>{ if(im.instanceColor) im.instanceColor.needsUpdate=true; im.instanceMatrix.needsUpdate=true; };
 
-  // стволы + кроны двух видов (хвоя-конус и лиственная-икосаэдр)
-  const trunkG=new THREE.CylinderGeometry(0.26,0.36,2.2,6), trunkM=new THREE.MeshStandardMaterial({color:'#6b4a2b',roughness:1});
-  const pineG=new THREE.ConeGeometry(1.7,3.8,7), leafG=new THREE.IcosahedronGeometry(1.9,0);
+  const setT=(im,idx,x,y,z,s,c)=>{ pos.set(x,y,z); scl.set(s,s,s); m.compose(pos,q,scl); im.setMatrixAt(idx,m); if(c) im.setColorAt(idx,c); };
+
+  // стволы + объёмные кроны: ёлки в 3 яруса конусов, лиственные — 2 пышные шапки
+  const trunkG=new THREE.CylinderGeometry(0.2,0.32,2.2,6), trunkM=new THREE.MeshStandardMaterial({color:'#6b4a2b',roughness:1});
+  const coneG=new THREE.ConeGeometry(1.5,2.0,8), blobG=new THREE.IcosahedronGeometry(1.7,0);
   const greenM=()=>new THREE.MeshStandardMaterial({roughness:1,flatShading:true});
-  const NT=160, trunks=new THREE.InstancedMesh(trunkG,trunkM,NT),
-        pines=new THREE.InstancedMesh(pineG,greenM(),NT), leaves=new THREE.InstancedMesh(leafG,greenM(),NT);
-  pines.castShadow=true; leaves.castShadow=true;
+  const NT=IS_MOBILE?120:220;
+  const trunks=new THREE.InstancedMesh(trunkG,trunkM,NT);
+  const p1=new THREE.InstancedMesh(coneG,greenM(),NT), p2=new THREE.InstancedMesh(coneG,greenM(),NT), p3=new THREE.InstancedMesh(coneG,greenM(),NT);
+  const l1=new THREE.InstancedMesh(blobG,greenM(),NT), l2=new THREE.InstancedMesh(blobG,greenM(),NT);
+  [p1,p2,p3,l1,l2].forEach(im=>im.castShadow=true);
   let it=0,ip=0,il=0,tries=0;
   while(it<NT && tries<NT*25){ tries++;
-    const a=Math.random()*Math.PI*2, d=50+Math.random()*640, x=Math.cos(a)*d, z=Math.sin(a)*d;
+    const a=Math.random()*Math.PI*2, d=45+Math.random()*680, x=Math.cos(a)*d, z=Math.sin(a)*d;
     if(onTrack(x,z)||nearPond(x,z)) continue;
-    const gy=terrainHeight(x,z), s=0.8+Math.random()*1.3; upY(Math.random()*6);
-    pos.set(x,gy+1.1*s,z); scl.set(s,s,s); m.compose(pos,q,scl); trunks.setMatrixAt(it,m); it++;
-    if(Math.random()<0.5){ pos.set(x,gy+(2.2+1.5)*s,z); m.compose(pos,q,scl); pines.setMatrixAt(ip,m);
-      col.setHSL(0.30+Math.random()*0.08,0.42,0.26+Math.random()*0.12); pines.setColorAt(ip,col); ip++; }
-    else { pos.set(x,gy+(2.2+1.3)*s,z); m.compose(pos,q,scl); leaves.setMatrixAt(il,m);
-      col.setHSL(0.24+Math.random()*0.12,0.45,0.34+Math.random()*0.12); leaves.setColorAt(il,col); il++; }
+    const gy=terrainHeight(x,z), s=0.8+Math.random()*1.4; upY(Math.random()*6);
+    setT(trunks,it,x,gy+1.1*s,z,s);
+    if(Math.random()<0.5){ col.setHSL(0.31+Math.random()*0.06,0.45,0.22+Math.random()*0.1);
+      setT(p1,ip,x,gy+2.0*s,z,s,col); setT(p2,ip,x,gy+3.0*s,z,s*0.72,col); setT(p3,ip,x,gy+3.8*s,z,s*0.48,col); ip++;
+    } else { col.setHSL(0.24+Math.random()*0.1,0.5,0.32+Math.random()*0.12);
+      setT(l1,il,x,gy+2.6*s,z,s,col); setT(l2,il,x,gy+3.5*s,z,s*0.7,col); il++; }
+    it++;
   }
-  trunks.count=it; pines.count=ip; leaves.count=il; flag(trunks); flag(pines); flag(leaves);
-  treesGroup.add(trunks,pines,leaves);
+  trunks.count=it; p1.count=p2.count=p3.count=ip; l1.count=l2.count=il;
+  [trunks,p1,p2,p3,l1,l2].forEach(flag); treesGroup.add(trunks,p1,p2,p3,l1,l2);
 
   // кусты
-  const bushG=new THREE.IcosahedronGeometry(0.7,0), NB=90, bushes=new THREE.InstancedMesh(bushG,greenM(),NB);
+  const bushG=new THREE.IcosahedronGeometry(0.6,0), NB=IS_MOBILE?60:110, bushes=new THREE.InstancedMesh(bushG,greenM(),NB);
   let ib=0; tries=0;
-  while(ib<NB && tries<NB*25){ tries++; const a=Math.random()*Math.PI*2,d=30+Math.random()*660,x=Math.cos(a)*d,z=Math.sin(a)*d;
-    if(onTrack(x,z)||nearPond(x,z)) continue; const gy=terrainHeight(x,z),s=0.7+Math.random();
-    pos.set(x,gy+0.5*s,z); scl.set(s,s*0.8,s); m.compose(pos,upY(Math.random()*6),scl); bushes.setMatrixAt(ib,m);
-    col.setHSL(0.27+Math.random()*0.08,0.4,0.3+Math.random()*0.1); bushes.setColorAt(ib,col); ib++; }
+  while(ib<NB && tries<NB*25){ tries++; const a=Math.random()*Math.PI*2,d=25+Math.random()*700,x=Math.cos(a)*d,z=Math.sin(a)*d;
+    if(onTrack(x,z)||nearPond(x,z)) continue; const gy=terrainHeight(x,z),s=0.7+Math.random(); upY(Math.random()*6);
+    col.setHSL(0.27+Math.random()*0.08,0.45,0.3+Math.random()*0.1); setT(bushes,ib,x,gy+0.45*s,z,s,col); ib++; }
   bushes.count=ib; flag(bushes); treesGroup.add(bushes);
+
+  // трава — пучки у земли в игровой зоне, оживляют картинку
+  const tuftG=new THREE.ConeGeometry(0.16,0.6,4), NG=IS_MOBILE?300:700, tufts=new THREE.InstancedMesh(tuftG,greenM(),NG);
+  let ig=0; tries=0;
+  while(ig<NG && tries<NG*8){ tries++; const a=Math.random()*Math.PI*2,d=18+Math.random()*300,x=Math.cos(a)*d,z=Math.sin(a)*d;
+    if(onTrack(x,z)||nearPond(x,z)) continue; const gy=terrainHeight(x,z),s=0.6+Math.random()*0.9; upY(Math.random()*6);
+    col.setHSL(0.26+Math.random()*0.08,0.5,0.32+Math.random()*0.1); setT(tufts,ig,x,gy+0.3*s,z,s,col); ig++; }
+  tufts.count=ig; flag(tufts); treesGroup.add(tufts);
 
   // камни
   const rockG=new THREE.DodecahedronGeometry(0.8,0), rockM=new THREE.MeshStandardMaterial({color:'#8a8d92',roughness:1,flatShading:true});
