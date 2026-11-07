@@ -149,6 +149,7 @@
     <button class="ui" id="soundBtn">Звук вкл</button>
     <button class="ui" id="fxBtn">Эффекты</button>
     <button class="ui" id="qBtn">Графика</button>
+    <button class="ui" id="nightBtn">Ночь</button>
     <button class="ui" id="placeBtn">Ферма ▶</button>
     <button class="ui" id="garageBtn">Гараж</button>
     <button class="ui" id="resetBtn">Заново (R)</button>
@@ -283,6 +284,33 @@ sun.shadow.camera.top = 70; sun.shadow.camera.bottom = -70;
 sun.shadow.bias = -0.0004;
 scene.add(sun); scene.add(sun.target);
 
+// ---------- день / ночь ----------
+// Днём светит солнце, ночью — луна и фонари. Числа можно крутить.
+let night = !!cfg.night;
+function applyTime(){
+  if(night){
+    domeMesh.material.map=SKY_NIGHT; domeMesh.material.needsUpdate=true;
+    scene.environment=ENV_NIGHT;
+    scene.background=new THREE.Color('#080d20');
+    scene.fog.color.set('#0d1430');
+    sun.color.set('#a8bcff'); sun.intensity=0.5;          // лунный свет: слабый и холодный
+    sun.position.set(-70,110,-40);
+    hemi.color.set('#2b3c74'); hemi.groundColor.set('#0b1018'); hemi.intensity=0.22;
+    renderer.toneMappingExposure=1.05;
+  } else {
+    domeMesh.material.map=SKY_DAY; domeMesh.material.needsUpdate=true;
+    scene.environment=ENV_DAY;
+    scene.background=new THREE.Color('#bfe0ff');
+    scene.fog.color.set('#cfe6f5');
+    sun.color.set('#fff0d8'); sun.intensity=2.35;
+    sun.position.set(60,90,30);
+    hemi.color.set('#dff0ff'); hemi.groundColor.set('#4a5540'); hemi.intensity=0.6;
+    renderer.toneMappingExposure=1.22;
+  }
+  lampGlow.forEach(o=>{ if(o) o.visible=night; });
+  if(headPool) headPool.visible=night;
+}
+
 function applyQuality(rebuild){
   const q=Q();
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, q.px));
@@ -310,9 +338,21 @@ function envEquirect(){
   g.fillStyle=sg; g.fillRect(sx-90,sy-90,180,180);
   const t=new THREE.CanvasTexture(c); t.mapping=THREE.EquirectangularReflectionMapping; t.colorSpace=THREE.SRGBColorSpace; return t;
 }
+function envNight(){
+  const c=cnv(512,256), g=c.getContext('2d');
+  const grd=g.createLinearGradient(0,0,0,256);
+  grd.addColorStop(0,'#070b1c'); grd.addColorStop(0.55,'#131c3c'); grd.addColorStop(1,'#1a2036');
+  g.fillStyle=grd; g.fillRect(0,0,512,256);
+  const sg=g.createRadialGradient(150,54,2,150,54,70);
+  sg.addColorStop(0,'rgba(190,210,255,0.8)'); sg.addColorStop(1,'rgba(150,175,235,0)');
+  g.fillStyle=sg; g.fillRect(80,0,140,130);
+  const t=new THREE.CanvasTexture(c); t.mapping=THREE.EquirectangularReflectionMapping; t.colorSpace=THREE.SRGBColorSpace; return t;
+}
 const _pmrem=new THREE.PMREMGenerator(renderer);
-const _envtex=envEquirect(); const _envRT=_pmrem.fromEquirectangular(_envtex);
-scene.environment=_envRT.texture; _envtex.dispose(); _pmrem.dispose();
+const _e1=envEquirect(), ENV_DAY=_pmrem.fromEquirectangular(_e1).texture; _e1.dispose();
+const _e2=envNight(),   ENV_NIGHT=_pmrem.fromEquirectangular(_e2).texture; _e2.dispose();
+_pmrem.dispose();
+scene.environment=ENV_DAY;
 
 // ---------- пост-обработка: свечение (bloom) ----------
 const composer = new EffectComposer(renderer);
@@ -342,14 +382,34 @@ function skyDome() {
     g.fillStyle=cg; g.beginPath(); g.ellipse(x,y,r,r*0.58,0,0,7); g.fill();
   }
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace;
-  const dome = new THREE.Mesh(new THREE.SphereGeometry(1000, 32, 16),
-    new THREE.MeshBasicMaterial({ map:t, side:THREE.BackSide, fog:false, depthWrite:false }));
-  scene.add(dome);
+  return t;
 }
-skyDome();
+// ночное небо: тёмный градиент, звёзды, луна с ореолом
+function skyNight(){
+  const c=cnv(1024,512), g=c.getContext('2d');
+  const grd=g.createLinearGradient(0,0,0,512);
+  grd.addColorStop(0,'#04060f'); grd.addColorStop(0.45,'#0b1230'); grd.addColorStop(0.78,'#1b2550'); grd.addColorStop(1,'#26304f');
+  g.fillStyle=grd; g.fillRect(0,0,1024,512);
+  for(let i=0;i<520;i++){                       // звёзды гуще вверху
+    const x=Math.random()*1024, y=Math.pow(Math.random(),1.5)*330, r=Math.random()*1.3+0.3;
+    g.fillStyle='rgba(255,255,255,'+(0.25+Math.random()*0.7).toFixed(2)+')';
+    g.beginPath(); g.arc(x,y,r,0,7); g.fill();
+  }
+  const mx=300,my=96, mg=g.createRadialGradient(mx,my,8,mx,my,150);
+  mg.addColorStop(0,'rgba(200,218,255,0.75)'); mg.addColorStop(1,'rgba(160,185,255,0)');
+  g.fillStyle=mg; g.fillRect(mx-150,my-150,300,300);
+  g.fillStyle='#e8eeff'; g.beginPath(); g.arc(mx,my,26,0,7); g.fill();
+  g.fillStyle='rgba(170,185,215,.5)';
+  g.beginPath(); g.arc(mx-8,my-6,5,0,7); g.fill(); g.beginPath(); g.arc(mx+9,my+7,7,0,7); g.fill();
+  const t=new THREE.CanvasTexture(c); t.colorSpace=THREE.SRGBColorSpace; return t;
+}
+const SKY_DAY=skyDome(), SKY_NIGHT=skyNight();
+const domeMesh = new THREE.Mesh(new THREE.SphereGeometry(1600, 32, 16),
+  new THREE.MeshBasicMaterial({ map:SKY_DAY, side:THREE.BackSide, fog:false, depthWrite:false }));
+scene.add(domeMesh);
 
 // ---------- рельеф: холмы вокруг ровной игровой зоны (Стадия 2) ----------
-const FLAT_R=300, HILL_RAMP=170;   // внутри FLAT_R земля ровная (дорога плоская), дальше — холмы
+const FLAT_R=430, HILL_RAMP=220;   // внутри FLAT_R земля ровная (дорога плоская), дальше — холмы
 function terrainHeight(x,z){
   const d=Math.hypot(x,z), fall=Math.max(0,Math.min(1,(d-FLAT_R)/HILL_RAMP));
   if(fall<=0) return 0;
@@ -422,10 +482,10 @@ function buildTrack(conf) {
     if(i>0) dist += p.distanceTo(prev); prev.copy(p);
     if (i%4===0) trackCenters.push(new THREE.Vector2(p.x,p.z));
     const L=p.clone().addScaledVector(n,halfW), R=p.clone().addScaledVector(n,-halfW);
-    rp.push(L.x,0.02,L.z, R.x,0.02,R.z); ru.push(0,dist/6, 1,dist/6);
+    rp.push(L.x,0.10,L.z, R.x,0.10,R.z); ru.push(0,dist/6, 1,dist/6);
     const kL=p.clone().addScaledVector(n,halfW+kerb), kR=p.clone().addScaledVector(n,-halfW-kerb);
-    kLp.push(L.x,0.03,L.z, kL.x,0.03,kL.z);
-    kRp.push(R.x,0.03,R.z, kR.x,0.03,kR.z);
+    kLp.push(L.x,0.11,L.z, kL.x,0.07,kL.z);
+    kRp.push(R.x,0.11,R.z, kR.x,0.07,kR.z);
     ku.push(0,dist/2.2, 1,dist/2.2);
   }
   for (let i=0;i<STEPS;i++){ const a=i*2,b=i*2+1,c=(i+1)*2,d=(i+1)*2+1; idx.push(a,b,c, b,d,c); }
@@ -436,16 +496,14 @@ function buildTrack(conf) {
   // асфальт (мокрый, отражает небо) + пунктир по центру
   const rc = cnv(256,256), rg = rc.getContext('2d');   // одна плитка = 6 м дороги
   rg.fillStyle='#26292f'; rg.fillRect(0,0,256,256);
-  for(let i=0;i<4000;i++){const v=25+Math.random()*30; rg.fillStyle=`rgba(${v},${v},${v},.6)`; rg.fillRect(Math.random()*256,Math.random()*256,3,3);}
+  for(let i=0;i<2600;i++){const v=34+Math.random()*12; rg.fillStyle=`rgba(${v},${v},${v},.35)`; rg.fillRect(Math.random()*256,Math.random()*256,2,2);}
   rg.fillStyle='#e9e9e9';
   rg.fillRect(7,0,4,256); rg.fillRect(245,0,4,256);     // сплошные по краям
   rg.fillRect(123,0,3,256); rg.fillRect(130,0,3,256);   // двойная осевая посередине
   rg.fillRect(62,0,4,128); rg.fillRect(190,0,4,128);    // прерывистые между полосами
   const rt=new THREE.CanvasTexture(rc); rt.wrapS=rt.wrapT=THREE.RepeatWrapping; rt.colorSpace=THREE.SRGBColorSpace;
-  const rr=cnv(64,128), rrg=rr.getContext('2d'); rrg.fillStyle='#b6b6b6'; rrg.fillRect(0,0,64,128);
-  for(let i=0;i<9;i++){ rrg.fillStyle='rgba(40,40,40,.5)'; rrg.fillRect(Math.random()*64,0,4+Math.random()*10,128); }
-  const rrt=new THREE.CanvasTexture(rr); rrt.wrapS=rrt.wrapT=THREE.RepeatWrapping; rrt.colorSpace=THREE.NoColorSpace;
-  const road=new THREE.Mesh(mk(rp,ru), new THREE.MeshStandardMaterial({map:rt,roughnessMap:rrt,roughness:.62,metalness:0,envMapIntensity:1.5,side:THREE.DoubleSide}));
+  // асфальт ровный по всей трассе: без пятен и полос
+  const road=new THREE.Mesh(mk(rp,ru), new THREE.MeshStandardMaterial({map:rt,roughness:.72,metalness:0,envMapIntensity:0.65,side:THREE.DoubleSide}));
   road.receiveShadow=true; trackGroup.add(road);
   // поребрики красно-белые
   const kc=cnv(32,32), kg=kc.getContext('2d');
@@ -510,14 +568,58 @@ function buildTrack(conf) {
   };
   rail(1); rail(-1);
 
+  // ---------- фонари: столб с консолью, через 42 м, по очереди слева и справа ----------
+  {
+    const STEP_M=42, every=Math.max(6,Math.round(STEP_M/(dist/STEPS)));
+    const poleG=new THREE.BoxGeometry(0.24,9.2,0.24).translate(0,4.6,0);
+    const armG =new THREE.BoxGeometry(3.0,0.2,0.2).translate(-1.5,9.1,0);
+    const baseG=new THREE.BoxGeometry(0.6,0.5,0.6).translate(0,0.25,0);
+    const lampG=mergeGeos([poleG,armG,baseG]);
+    const lampM=new THREE.MeshStandardMaterial({color:'#8d969e',roughness:.6,metalness:.5});
+    const headG=new THREE.BoxGeometry(1.2,0.3,0.55).translate(-3.0,8.95,0);
+    const headM=new THREE.MeshBasicMaterial({color:'#ffe0ad'});     // ночью светится и ловит bloom
+    const n=Math.floor(STEPS/every)+1;
+    const poles=new THREE.InstancedMesh(lampG,lampM,n), heads=new THREE.InstancedMesh(headG,headM,n);
+    // пятно света на асфальте
+    const pc=cnv(128,128), pg=pc.getContext('2d');
+    const pgr=pg.createRadialGradient(64,64,4,64,64,62);
+    pgr.addColorStop(0,'rgba(255,214,150,0.85)'); pgr.addColorStop(0.45,'rgba(255,200,130,0.28)'); pgr.addColorStop(1,'rgba(255,190,120,0)');
+    pg.fillStyle=pgr; pg.fillRect(0,0,128,128);
+    const pt=new THREE.CanvasTexture(pc); pt.colorSpace=THREE.SRGBColorSpace;
+    const poolG=new THREE.PlaneGeometry(22,15).rotateX(-Math.PI/2);
+    const poolM=new THREE.MeshBasicMaterial({map:pt,transparent:true,blending:THREE.AdditiveBlending,depthWrite:false,fog:true});
+    const pools=new THREE.InstancedMesh(poolG,poolM,n);
+    const mm=new THREE.Matrix4(), qq=new THREE.Quaternion(), vv=new THREE.Vector3(), ss=new THREE.Vector3(1,1,1);
+    let ip=0;
+    for(let i=0;i<=STEPS;i+=every){
+      const sd=(ip%2===0)?1:-1;
+      if(sd===gSide && wrapNear(i,gi,gHalf+4)) { ip++; continue; }       // в проёме фонарей нет
+      const nx=TPnx[i]*sd, nz=TPnz[i]*sd;
+      const x=TPx[i]+nx*(halfW+3.4), z=TPz[i]+nz*(halfW+3.4);
+      const ry=Math.atan2(nx,nz);                                        // консоль смотрит на дорогу
+      vv.set(x,0,z); qq.setFromAxisAngle(new THREE.Vector3(0,1,0),ry); mm.compose(vv,qq,ss);
+      poles.setMatrixAt(ip,mm); heads.setMatrixAt(ip,mm);
+      vv.set(TPx[i]+nx*(halfW*0.25), 0.17, TPz[i]+nz*(halfW*0.25)); mm.compose(vv,qq,ss);
+      pools.setMatrixAt(ip,mm);
+      ip++;
+    }
+    poles.count=heads.count=pools.count=ip;
+    poles.instanceMatrix.needsUpdate=heads.instanceMatrix.needsUpdate=pools.instanceMatrix.needsUpdate=true;
+    poles.castShadow=true;
+    heads.visible=night; pools.visible=night;
+    lampGlow=[heads,pools];
+    trackGroup.add(poles,heads,pools);
+  }
+
   // ---------- съезд на ферму: плавный поворот, а не выезд из середины ----------
   // Грунтовка отходит от дороги по касательной и дугой уходит к арке.
   {
     const at=(j,off)=>{ const k=((j%(STEPS+1))+STEPS+1)%(STEPS+1);
       return new THREE.Vector3(TPx[k]+TPnx[k]*gSide*off, 0, TPz[k]+TPnz[k]*gSide*off); };
-    const A=at(gi-gHalf, halfW+1.0);            // начало съезда — ещё у кромки
-    const B=at(gi,       halfW+5.0);            // отходим от дороги
-    const C=at(gi+gHalf, halfW+17);             // разворачиваемся к ферме
+    const DW0=6.5;                              // полуширина грунтовки
+    const A=at(gi-gHalf, halfW+DW0+0.3);        // внутренний край вровень с кромкой асфальта
+    const B=at(gi,       halfW+DW0+2.5);        // отходим от дороги
+    const C=at(gi+gHalf, halfW+DW0+13);         // разворачиваемся к ферме
     const D=new THREE.Vector3(farmEntryTrig.x,0,farmEntryTrig.z);
     const Cm=C.clone().lerp(D,0.35);
     const dcur=new THREE.CatmullRomCurve3([A,B,Cm,D], false, 'centripetal', 0.5);
@@ -530,13 +632,13 @@ function buildTrack(conf) {
     dg.fillStyle='rgba(120,98,70,.7)'; dg.fillRect(14,0,6,64); dg.fillRect(44,0,6,64);   // колеи
     const dt2=new THREE.CanvasTexture(dc); dt2.wrapS=dt2.wrapT=THREE.RepeatWrapping; dt2.colorSpace=THREE.SRGBColorSpace;
     // лента грунтовки по кривой
-    const DW=6.5, dpos=[], duv=[], didx=[]; let dv=0;
+    const DW=DW0, dpos=[], duv=[], didx=[]; let dv=0;
     for(let i=0;i<=DN;i++){
       const p=dpts[i], pn=dpts[Math.min(i+1,DN)], pp=dpts[Math.max(i-1,0)];
       const tx=pn.x-pp.x, tz=pn.z-pp.z, tl=Math.hypot(tx,tz)||1;
       const nx=-tz/tl, nz=tx/tl;
       if(i>0) dv+=Math.hypot(p.x-dpts[i-1].x,p.z-dpts[i-1].z)/7;
-      dpos.push(p.x+nx*DW,0.045,p.z+nz*DW, p.x-nx*DW,0.045,p.z-nz*DW);
+      dpos.push(p.x+nx*DW,0.085,p.z+nz*DW, p.x-nx*DW,0.085,p.z-nz*DW);
       duv.push(0,dv, 1,dv);
     }
     for(let i=0;i<DN;i++){ const a=i*2,b=i*2+1,c=(i+1)*2,d=(i+1)*2+1; didx.push(a,b,c, b,d,c); }
@@ -555,6 +657,24 @@ function buildTrack(conf) {
   }
   return curve;
 }
+
+// склеиваем несколько коробок в одну геометрию — чтобы фонарь был одним объектом
+function mergeGeos(list){
+  const pos=[],nor=[],uv=[];
+  for(const g0 of list){
+    const g=g0.index?g0.toNonIndexed():g0;
+    const p=g.attributes.position.array, nn=g.attributes.normal.array, u=g.attributes.uv.array;
+    for(let i=0;i<p.length;i++) pos.push(p[i]);
+    for(let i=0;i<nn.length;i++) nor.push(nn[i]);
+    for(let i=0;i<u.length;i++) uv.push(u[i]);
+  }
+  const out=new THREE.BufferGeometry();
+  out.setAttribute('position', new THREE.Float32BufferAttribute(pos,3));
+  out.setAttribute('normal',   new THREE.Float32BufferAttribute(nor,3));
+  out.setAttribute('uv',       new THREE.Float32BufferAttribute(uv,2));
+  out.computeBoundingSphere(); return out;
+}
+let lampGlow=[];          // что светится только ночью
 
 // ---------- горы на горизонте ----------
 function buildMountains() {
@@ -726,6 +846,22 @@ function geoCross(w,h){
 //  Все едут в ту же сторону, что и вы, но медленнее. Числа можно править.
 // ==========================================================================
 const trafficGroup=new THREE.Group(); scene.add(trafficGroup);
+// свет фар: два пятна на дороге перед машиной, появляются ночью
+const headPool=(()=>{
+  const c=cnv(128,128), g=c.getContext('2d');
+  const gr=g.createRadialGradient(64,118,3,64,96,120);
+  gr.addColorStop(0,'rgba(255,245,215,0.9)'); gr.addColorStop(0.4,'rgba(255,240,205,0.3)'); gr.addColorStop(1,'rgba(255,235,195,0)');
+  g.fillStyle=gr; g.beginPath(); g.moveTo(64,128); g.lineTo(10,6); g.lineTo(118,6); g.closePath(); g.fill();
+  g.globalCompositeOperation='destination-out';          // дальний край растворяем, чтобы не было резкой линии
+  const fade=g.createLinearGradient(0,0,0,128);
+  fade.addColorStop(0,'rgba(0,0,0,1)'); fade.addColorStop(0.5,'rgba(0,0,0,0)');
+  g.fillStyle=fade; g.fillRect(0,0,128,128);
+  g.globalCompositeOperation='source-over';
+  const t=new THREE.CanvasTexture(c); t.colorSpace=THREE.SRGBColorSpace;
+  const m=new THREE.Mesh(new THREE.PlaneGeometry(16,26).rotateX(-Math.PI/2),
+    new THREE.MeshBasicMaterial({map:t,transparent:true,blending:THREE.AdditiveBlending,depthWrite:false}));
+  m.visible=false; scene.add(m); return m;
+})();
 let traffic=[];
 const KINDS=[   // вид: длина, ширина, скорость м/с, полоса (0 — у правого края)
   {k:'фура',        len:13.5, wid:2.7, v:[12,15], lanes:[0,1], p:0.16},
@@ -772,6 +908,9 @@ function buildVehicle(def){
     addWheel(-W/2,L/2-1.1); addWheel(W/2,L/2-1.1);
     addWheel(-W/2,-L/2+1.1); addWheel(W/2,-L/2+1.1);
   }
+  const tailM=new THREE.MeshBasicMaterial({color:'#ff3b2f'});
+  for(const sx of [-W/2+0.3,W/2-0.3]){ const t2=new THREE.Mesh(new THREE.BoxGeometry(0.3,0.16,0.08),tailM);
+    t2.position.set(sx, wr+0.6, -L/2-0.02); g.add(t2); }
   return g;
 }
 function buildTraffic(){
@@ -1235,7 +1374,7 @@ skidMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage); scene.add(skidMesh);
 let skidI=0; const _m=new THREE.Matrix4(),_q=new THREE.Quaternion(),_s=new THREE.Vector3(1,1,1),_p=new THREE.Vector3(),_e=new THREE.Euler();
 function clearSkids(){ for(let i=0;i<SKID_MAX;i++){_m.makeScale(0,0,0); skidMesh.setMatrixAt(i,_m);} skidMesh.instanceMatrix.needsUpdate=true; }
 clearSkids();
-function addSkid(x,z,yaw){ _p.set(x,0.04,z); _e.set(-Math.PI/2,0,-yaw); _q.setFromEuler(_e);
+function addSkid(x,z,yaw){ _p.set(x,0.13,z); _e.set(-Math.PI/2,0,-yaw); _q.setFromEuler(_e);
   _m.compose(_p,_q,_s); skidMesh.setMatrixAt(skidI,_m); skidI=(skidI+1)%SKID_MAX; skidMesh.instanceMatrix.needsUpdate=true; }
 
 // ---------- дым ----------
@@ -1457,6 +1596,11 @@ function updatePlay(dt){
   carGroup.position.set(car.x,0,car.z);
   carGroup.rotation.y=-car.yaw+Math.PI/2;
   carBlob.position.set(car.x,0.05,car.z); carBlob.rotation.z=-car.yaw;
+  if(headPool.visible){                        // пятно фар едет перед машиной
+    const cs=Math.cos(car.yaw), sn=Math.sin(car.yaw);
+    headPool.position.set(car.x+cs*15, 0.16, car.z+sn*15);
+    headPool.rotation.y=-car.yaw+Math.PI/2;
+  }
   const roll=win_speed*dt/(MODELS[cfg.model].wheelR||0.42);
   carWheels.forEach(w=>{ if(w.front) w.pivot.rotation.y=steer*0.5; w.spin.rotation.x+=roll; });
 
@@ -1469,7 +1613,8 @@ function updatePlay(dt){
   camera.lookAt(car.x+Math.cos(camYaw)*4,1.2,car.z+Math.sin(camYaw)*4);
   const wantFov=60+Math.min(win_speed*0.35,16); camera.fov+=(wantFov-camera.fov)*Math.min(1,4*dt); camera.updateProjectionMatrix(); // зум по скорости
   camera.rotateZ(Math.max(-0.14,Math.min(0.14,car.omega*0.11)));  // наклон в занос
-  sun.position.set(car.x+60,90,car.z+30); sun.target.position.set(car.x,0,car.z);
+  if(night) sun.position.set(car.x-70,110,car.z-40); else sun.position.set(car.x+60,90,car.z+30);
+  sun.target.position.set(car.x,0,car.z);
 
   fxSpeed.style.opacity=Math.min(win_speed/55,1)*0.9;
   fxFlash.style.opacity=win_drift?Math.min(0.28+win_combo*0.12,0.8):0;
@@ -1569,6 +1714,21 @@ function buildFarm(){
   const M=(c,r,m)=>new THREE.MeshStandardMaterial({color:c,roughness:r===undefined?0.9:r,metalness:m||0});
   const box=(w,h,d,mat)=>{ const b=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),mat); b.castShadow=true; b.receiveShadow=true; return b; };
   const at=(o,x,y,z)=>{ o.position.set(x,y||0,z||0); return o; };   // position нельзя присваивать, только set
+  // двускатная крыша: два ската + два треугольных фронтона. w — вдоль конька, d — поперёк
+  function gableRoof(w,d,rh,roofM,wallM,wallTop){
+    const g=new THREE.Group(), half=d/2, slope=Math.hypot(half,rh), ang=Math.atan2(rh,half);
+    for(const sg of [1,-1]){
+      const sl=box(w,0.35,slope,roofM);
+      sl.position.set(0, wallTop+rh/2, sg*half/2);
+      sl.rotation.x=sg*ang; g.add(sl);
+    }
+    const tri=new THREE.Shape(); tri.moveTo(-half,0); tri.lineTo(half,0); tri.lineTo(0,rh); tri.closePath();
+    for(const sx of [w/2-0.1,-w/2+0.1]){
+      const f=new THREE.Mesh(new THREE.ShapeGeometry(tri), wallM);
+      f.position.set(sx, wallTop, 0); f.rotation.y=Math.PI/2; f.castShadow=true; g.add(f);
+    }
+    return g;
+  }
 
   // ---------- материалы фермы ----------
   const RED=M('#b5392f',.85), WHITE=M('#f2efe6',.85), DARKROOF=M('#4a4f58',.8,.15),
@@ -1637,8 +1797,7 @@ function buildFarm(){
   const barn=new THREE.Group();
   barn.add(at(box(22,9,14,RED),0,4.5,0));
   for(const sz of [7.05,-7.05]){ const tr=box(23,0.5,0.2,WHITE); tr.position.set(0,9,sz); barn.add(tr); }
-  const bRoof=new THREE.Mesh(new THREE.CylinderGeometry(9.4,9.4,15,3), DARKROOF);
-  bRoof.rotation.z=Math.PI/2; bRoof.rotation.y=Math.PI/2; bRoof.position.y=10.2; bRoof.scale.set(1,1,0.58); bRoof.castShadow=true; barn.add(bRoof);
+  barn.add(gableRoof(23,15,5.4,DARKROOF,RED,9));
   const door=box(5,6,0.3,WHITE); door.position.set(0,3,7.1); barn.add(door);
   for(const r of [0.72,-0.72]){ const x1=box(6.6,0.35,0.2,RED); x1.position.set(0,3,7.3); x1.rotation.z=r; barn.add(x1); }
   add(barn,-40,-26);
@@ -1662,8 +1821,7 @@ function buildFarm(){
   // жилой дом
   const house=new THREE.Group();
   house.add(at(box(16,7,11,WHITE),0,3.5,0));
-  const hRoof=new THREE.Mesh(new THREE.CylinderGeometry(7.4,7.4,12,3),DARKROOF);
-  hRoof.rotation.z=Math.PI/2; hRoof.rotation.y=Math.PI/2; hRoof.scale.set(1,1,0.62); hRoof.position.y=8.4; hRoof.castShadow=true; house.add(hRoof);
+  house.add(gableRoof(17,12,3.8,DARKROOF,WHITE,7));
   for(const sx of [-5,-1.4,2.2,5.6]) for(const sy of [2.6,5.4]){ const w2=box(1.6,1.5,0.2,M('#2f4654',.4,.3)); w2.position.set(sx,sy,5.6); house.add(w2); }
   const porch=box(6,0.3,3,WOOD); porch.position.set(0,0.3,7); house.add(porch);
   add(house, 0, -34); add(signBoard('ДОМ','#2a2238'), 0, -26, 0.6);
@@ -1840,6 +1998,9 @@ document.getElementById('fpClose').onclick=closePanel;
 const fxBtn=document.getElementById('fxBtn');
 fxBtn.textContent = useBloom ? 'Эффекты вкл' : 'Эффекты выкл';
 fxBtn.onclick=()=>{ useBloom=!useBloom; fxBtn.textContent=useBloom?'Эффекты вкл':'Эффекты выкл'; };
+const nightBtn=document.getElementById('nightBtn');
+nightBtn.textContent = night?'День':'Ночь';
+nightBtn.onclick=()=>{ night=!night; cfg.night=night; saveCfg(); applyTime(); nightBtn.textContent=night?'День':'Ночь'; };
 const qBtn=document.getElementById('qBtn');
 let fpsVal=0;
 const qLabel=()=>{ qBtn.textContent='Графика: '+Q().name+(fpsVal?' · '+fpsVal+' к/с':''); };
@@ -1874,7 +2035,7 @@ function loop(now){
 }
 addEventListener('resize',()=>{ camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); applyQuality(false); bloomPass.setSize(innerWidth,innerHeight); });
 
-applyQuality(false);
+applyQuality(false); applyTime();
 document.getElementById('loader').style.display='none';
 requestAnimationFrame(loop);
 </script>
