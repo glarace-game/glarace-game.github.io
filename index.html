@@ -137,6 +137,7 @@
       <div class="stat"><div class="k">Скорость</div><div class="v"><span id="speed">0</span> км/ч</div></div>
       <div class="stat"><div class="k">Очки</div><div class="v" id="score">0</div></div>
       <div class="stat"><div class="k">Рекорд</div><div class="v" id="best">0</div></div>
+      <div class="stat" style="display:none"><div class="k">Кузов</div><div class="v" id="dmg">100%</div></div>
     </div>
     <div class="row" id="lapRow">
       <div class="stat"><div class="k">Круг</div><div class="v" id="lap">1</div></div>
@@ -842,6 +843,7 @@ function trafficClamp(){
     if(Math.abs(along)>=hl || Math.abs(side)>=hw) continue;
     const oa=hl-Math.abs(along), os=hw-Math.abs(side);
     const hit=Math.hypot(car.vx,car.vz);
+    addDamage(hit,1.4);                          // влетели в чужую машину — мнёт сильно
     if(hit>7 && v.stop<=0){                      // удар: разворачивает и останавливает её
       v.spin=(Math.random()<0.5?-1:1)*(1.4+Math.random()*2.2)*Math.min(1.6,hit/22);
       v.stop=2.6+Math.random()*1.8;
@@ -1080,6 +1082,34 @@ function buildTrees() {
 //  Машина — строится из настроек (модель/цвет/наклейки)
 // ==========================================================================
 let carGroup=null, carWheels=[];
+let damage=0, dentGroup=null;        // 0 — машина целая, 1 — в хлам
+// удар: добавляем мятины. sp — скорость в момент удара, k — насколько жёсткий удар
+function addDamage(sp,k){
+  if(sp<6) return;
+  const d=Math.min(1, damage + (sp-6)*0.004*(k||1));
+  if(d-damage>0.004){ damage=d; applyDamage(); }
+}
+// мятины: вдавленные тёмные пятна по кузову + перекос капота
+function applyDamage(){
+  if(!carGroup) return;
+  if(dentGroup){ carGroup.remove(dentGroup); dentGroup.traverse(o=>{ if(o.geometry) o.geometry.dispose(); }); }
+  dentGroup=new THREE.Group(); carGroup.add(dentGroup);
+  const mdl=MODELS[cfg.model], [bw,bh,bl]=mdl.body, y0=mdl.wheelR+bh/2+0.02;
+  const n=Math.round(damage*14);
+  const dm=new THREE.MeshStandardMaterial({color:'#6b6b70',roughness:.95,metalness:.35,flatShading:true});
+  for(let i=0;i<n;i++){
+    const side=Math.random();
+    const dent=new THREE.Mesh(new THREE.DodecahedronGeometry(0.22+Math.random()*0.26,0),dm);
+    if(side<0.42)      dent.position.set((Math.random()-0.5)*bw*0.9, y0+bh*0.45, (Math.random()-0.5)*bl*0.9);   // капот и крыша
+    else if(side<0.8)  dent.position.set((Math.random()<0.5?-1:1)*bw*0.5, y0+(Math.random()-0.3)*bh*0.7, (Math.random()-0.5)*bl*0.85); // борта
+    else               dent.position.set((Math.random()-0.5)*bw*0.8, y0, (Math.random()<0.5?1:-1)*bl*0.5);      // нос и корма
+    dent.scale.set(1,0.5+Math.random()*0.5,1); dent.rotation.set(Math.random()*3,Math.random()*3,Math.random()*3);
+    dentGroup.add(dent);
+  }
+  carGroup.rotation.z=0;                                  // перекос даём кузову, не всей машине
+  const skew=damage*0.08;
+  carGroup.traverse(o=>{ if(o.userData.panel){ o.rotation.z=o.userData.sk*skew; } });
+}
 // колесо: покрышка с протектором + диск со спицами (Тир 2)
 function rimTex(){
   const c=cnv(128,128), g=c.getContext('2d');
@@ -1126,6 +1156,7 @@ function addDecals(car, body, mdl){
 }
 function buildCar(){
   if(carGroup){ scene.remove(carGroup); }
+  dentGroup=null;
   const mdl=MODELS[cfg.model], base=cfg.color;
   const car=new THREE.Group(); carWheels=[];
   const paint=new THREE.MeshPhysicalMaterial({color:base, roughness:.28, metalness:.6, clearcoat:1, clearcoatRoughness:.12, envMapIntensity:1.9});
@@ -1135,6 +1166,7 @@ function buildCar(){
   const [bw,bh,bl]=mdl.body;
   const body=new THREE.Mesh(new THREE.BoxGeometry(bw,bh,bl), paint);
   body.position.y=mdl.wheelR+bh/2+0.02; body.castShadow=true; car.add(body);
+  body.userData.panel=true; body.userData.sk=0.35;
 
   const [cw,ch,cl,cz]=mdl.cabin;
   const cabin=new THREE.Mesh(new THREE.BoxGeometry(cw,ch,cl), paint);
@@ -1150,6 +1182,7 @@ function buildCar(){
   }
   const nose=new THREE.Mesh(new THREE.BoxGeometry(bw*0.92,bh*0.6,0.7), paint);
   nose.position.set(0, body.position.y-bh*0.16, bl/2-0.12); nose.rotation.x=0.14; car.add(nose); // заниженный нос
+  nose.userData.panel=true; nose.userData.sk=-1.0;
 
   if(mdl.scoop){ const sc=new THREE.Mesh(new THREE.BoxGeometry(0.7,0.18,0.9),dark);
     sc.position.set(0, body.position.y+bh/2+0.06, bl*0.18); car.add(sc); }
@@ -1339,6 +1372,7 @@ function wallClamp(){
   const vn=car.vx*nx+car.vz*nz;
   if(vn*s>0){ car.vx-=nx*vn*1.2; car.vz-=nz*vn*1.2; }    // гасим удар в стену, лёгкий отскок
   car.vx*=0.985; car.vz*=0.985; car.omega*=0.93;     // чиркнули боком — чуть теряем скорость, но едем дальше
+  addDamage(Math.abs(vn),0.5);                       // об отбойник — лёгкая мятина
 }
 
 function stepPhysics(dt){
@@ -1366,7 +1400,7 @@ function stepPhysics(dt){
   let Fyr=-T.Cr*aR; Fyr=Math.max(-muR*loadR,Math.min(muR*loadR,Fyr));
 
   let Flong=0;
-  if(thr) Flong+=T.engineForce;
+  if(thr) Flong+=T.engineForce*(1-damage*0.3);        // мятый кузов едет хуже
   if(brk){ if(vLong>0.2) Flong-=T.brakeForce; else Flong-=T.reverseForce; }
   if(hb) Flong-=2200*(vLong>0?1:-1);
   Flong-=T.cDrag*vLong*Math.abs(vLong); Flong-=T.cRR*vLong;
@@ -1403,12 +1437,13 @@ function stepPhysics(dt){
     puff(rx-sn2*0.8,rz+cs2*0.8); puff(rx+sn2*0.8,rz-cs2*0.8);           // дым каждый кадр — гуще
     if(Math.random()<0.5){ puff(rx-sn2*0.5,rz+cs2*0.5); puff(rx+sn2*0.5,rz-cs2*0.5); }
   } else { driftTime=0; combo=1; }
+  if(damage>0.45 && Math.random()<damage*0.35) puff(car.x-cs2*0.6, car.z-sn2*0.6);   // из-под капота идёт дым
   win_speed=speed; win_drift=drifting; win_combo=combo;
 }
 
 // ---------- HUD / камера ----------
 let win_speed=0, win_drift=false, win_combo=1;
-const el={speed:document.getElementById('speed'),score:document.getElementById('score'),best:document.getElementById('best'),
+const el={speed:document.getElementById('speed'),score:document.getElementById('score'),best:document.getElementById('best'),dmg:document.getElementById('dmg'),
   pop:document.getElementById('driftPop'),mult:document.getElementById('mult')};
 el.best.textContent=Math.round(best);
 const lapEl=document.getElementById('lap'), lapCurEl=document.getElementById('lapCur'), lapBestEl=document.getElementById('lapBest');
@@ -1456,6 +1491,9 @@ function updatePlay(dt){
     }
   }
   audioUpdate();
+  if(el.dmg){ const hp=Math.round((1-damage)*100);
+    el.dmg.parentElement.style.display = damage>0.02?'':'none';
+    el.dmg.textContent=hp+'%'; el.dmg.style.color = hp<40?'#ff6b6b':(hp<75?'#ffd166':'#eaeaea'); }
   el.speed.textContent=Math.round(win_speed*3.6);
   el.score.textContent=Math.round(score);
   if(score>best){best=score; localStorage.setItem('glarace_best',best);}
@@ -1732,13 +1770,19 @@ const QUESTIONS=[
 function openPanel(){ panelOpen=true; document.getElementById('farmPanel').style.display='flex'; }
 function closePanel(){ panelOpen=false; document.getElementById('farmPanel').style.display='none'; }
 function openHangar(){
-  document.getElementById('fpTitle').innerHTML='Ангар — <span>выбор машины</span>';
+  document.getElementById('fpTitle').innerHTML='Мастерская — <span>машины и ремонт</span>';
   const body=document.getElementById('fpBody'); body.innerHTML='';
   const row=document.createElement('div'); row.className='opts';
   MODELS.forEach((mo,i)=>{ const b=document.createElement('div'); b.className='opt'+(cfg.model===i?' on':''); b.textContent=mo.name;
-    b.onclick=()=>{ cfg.model=i; saveCfg(); buildCar(); openHangar(); }; row.appendChild(b); });
+    b.onclick=()=>{ cfg.model=i; saveCfg(); buildCar(); applyDamage(); openHangar(); }; row.appendChild(b); });
   body.appendChild(row);
-  const hint=document.createElement('div'); hint.className='fpmsg'; hint.textContent='Выбери машину и жми «Закрыть» — поедешь на ней.'; body.appendChild(hint);
+  const hint=document.createElement('div'); hint.className='fpmsg';
+  if(damage>0.02){
+    hint.innerHTML='Кузов помят на '+Math.round(damage*100)+'%. Мятый кузов хуже разгоняется.';
+    const fix=document.createElement('button'); fix.className='fpans'; fix.textContent='Починить кузов';
+    fix.onclick=()=>{ damage=0; buildCar(); applyDamage(); openHangar(); };
+    body.appendChild(hint); body.appendChild(fix);
+  } else { hint.textContent='Кузов целый. Выбери машину и жми «Закрыть».'; body.appendChild(hint); }
   openPanel();
 }
 function openGate(){
