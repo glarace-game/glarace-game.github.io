@@ -866,9 +866,10 @@ function buildTrees() {
   //   смесь — обычный смешанный лес, пореже
   //   поле  — открытое поле, деревья поодиночке
   //   аллея — ровный ряд декоративных деревьев вдоль дороги
-  const SECTORS=['ель','ель','роща','поле','смесь','аллея','ель','поле','смесь',
-                 'роща','поле','аллея','ель','смесь','поле','роща','смесь','поле'];
-  const WEIGHT={'ель':1.7,'роща':1.25,'смесь':0.9,'поле':0.10,'аллея':0.45};
+  //   скалы — Карелия: гранитные стенки вдоль дороги, валуны, редкие сосны
+  const SECTORS=['ель','скалы','роща','поле','смесь','аллея','ель','поле','скалы',
+                 'роща','поле','аллея','скалы','смесь','поле','роща','смесь','поле'];
+  const WEIGHT={'ель':1.7,'роща':1.25,'смесь':0.9,'поле':0.10,'аллея':0.45,'скалы':0.55};
   const NSEC=SECTORS.length, nC=trackCenters.length||1;
   const secAt=(x,z)=>{ let bi=-1,bd=1e9; for(let i=0;i<nC;i++){ const c=trackCenters[i],dx=x-c.x,dz=z-c.y,d=dx*dx+dz*dz; if(d<bd){bd=d;bi=i;} } return SECTORS[Math.floor(bi/nC*NSEC)%NSEC]; };
 
@@ -902,6 +903,7 @@ function buildTrees() {
       if(b==='ель'){        r=26+Math.pow(Math.random(),0.75)*150; conP=0.88; }
       else if(b==='роща'){  r=24+Math.pow(Math.random(),0.85)*110; conP=0.10; }
       else if(b==='поле'){  r=48+Math.random()*190;                conP=0.45; }
+      else if(b==='скалы'){ r=30+Math.random()*150;                conP=0.80; }
       else {                r=25+Math.random()*165;                conP=0.50; }
       const s=0.9+Math.random()*1.0;
       if(addTree(c.x+Math.cos(a)*r, c.y+Math.sin(a)*r, Math.random()<conP, s)) got++;
@@ -957,13 +959,67 @@ function buildTrees() {
     setT(tufts,ig,x,gy,z,sc,col); ig++; }
   tufts.count=ig; flag(tufts); treesGroup.add(tufts);
 
-  // камни
-  const rockG=new THREE.DodecahedronGeometry(0.8,0), rockM=new THREE.MeshStandardMaterial({color:'#8a8d92',roughness:1,flatShading:true});
-  const NR=60, rocks=new THREE.InstancedMesh(rockG,rockM,NR); let ir=0; tries=0;
+  // ---------- камни: мелочь, карельские валуны и гранитные стенки ----------
+  // Гранит в Карелии розовато-серый, местами с зеленью мха сверху.
+  const rockM=new THREE.MeshStandardMaterial({roughness:1,flatShading:true,metalness:0.02});
+  const setR=(im,idx,x,y,z,sx,sy,sz,ry,c)=>{ pos.set(x,y,z); scl.set(sx,sy,sz);
+    q.setFromAxisAngle(new THREE.Vector3(0,1,0),ry); m.compose(pos,q,scl); im.setMatrixAt(idx,m); if(c) im.setColorAt(idx,c); };
+  const granite=(dark)=>{ col.setHSL(0.03+Math.random()*0.05, 0.06+Math.random()*0.07, (dark?0.34:0.46)+Math.random()*0.16); return col; };
+
+  // мелкие камни по всей карте
+  const smallG=new THREE.DodecahedronGeometry(0.8,0), NR=IS_MOBILE?40:70;
+  const rocks=new THREE.InstancedMesh(smallG,rockM,NR); let ir=0; tries=0;
   while(ir<NR && tries<NR*25){ tries++; const a=Math.random()*Math.PI*2,d=40+Math.random()*660,x=Math.cos(a)*d,z=Math.sin(a)*d;
-    if(onTrack(x,z)) continue; const gy=terrainHeight(x,z),s=0.5+Math.random()*1.2;
-    pos.set(x,gy+0.3*s,z); scl.set(s,s*0.7,s); m.compose(pos,upY(Math.random()*6),scl); rocks.setMatrixAt(ir,m); ir++; }
+    if(onTrack(x,z)) continue; const gy=terrainHeight(x,z),sc=0.5+Math.random()*1.2;
+    setR(rocks,ir,x,gy+0.3*sc,z,sc,sc*0.7,sc,Math.random()*6,granite(false)); ir++; }
   rocks.count=ir; flag(rocks); treesGroup.add(rocks);
+
+  // валуны: крупные, по 2-6 м, чаще на скальных участках
+  const bldG=new THREE.DodecahedronGeometry(1,0), NBL=IS_MOBILE?60:140;
+  const bould=new THREE.InstancedMesh(bldG,rockM,NBL); bould.castShadow=true; bould.receiveShadow=true;
+  let ibl=0; tries=0;
+  while(ibl<NBL && tries<NBL*25){ tries++;
+    const c=trackCenters[(Math.random()*nC)|0]; if(!c) break;
+    const a=Math.random()*Math.PI*2, r=24+Math.random()*150;
+    const x=c.x+Math.cos(a)*r, z=c.y+Math.sin(a)*r;
+    if(onTrack(x,z)||nearPond(x,z)) continue;
+    const rocky=secAt(x,z)==='скалы';
+    if(!rocky && Math.random()<0.75) continue;                 // вне скал валуны редки
+    const gy=terrainHeight(x,z), sx=(rocky?1.4:0.9)+Math.random()*(rocky?2.2:1.2);
+    setR(bould,ibl,x,gy+sx*0.34,z,sx,sx*(0.55+Math.random()*0.4),sx*(0.8+Math.random()*0.5),Math.random()*6,granite(false));
+    ibl++; }
+  bould.count=ibl; flag(bould); treesGroup.add(bould);
+
+  // гранитные стенки вдоль дороги на скальных участках — как прорубленная в скале трасса
+  if(TP){
+    const wallG=new THREE.DodecahedronGeometry(1,0), NW=IS_MOBILE?160:420;
+    const wrock=new THREE.InstancedMesh(wallG,rockM,NW); wrock.castShadow=true; wrock.receiveShadow=true;
+    let iw=0;
+    for(let si=0; si<NSEC && iw<NW; si++){
+      if(SECTORS[si]!=='скалы') continue;
+      const j0=Math.floor(si/NSEC*nC), j1=Math.floor((si+1)/NSEC*nC);
+      const sides = Math.random()<0.45 ? [Math.random()<0.5?1:-1] : [1,-1];   // где-то стенка с одной стороны
+      for(const sd of sides){
+        const ph=Math.random()*6;
+        for(let j=j0;j<j1 && iw<NW;j++){
+          const st=j*4; if(st>=TP.x.length) break;
+          const nx=TP.nx[st]*sd, nz=TP.nz[st]*sd;
+          // высота стенки гуляет волной — не ровный забор, а скала
+          const w=0.55+0.45*Math.sin(ph+j*0.45)+0.2*Math.sin(ph*2+j*1.3);
+          if(w<0.25) continue;                                  // здесь скала сходит на нет
+          const h=2.6+w*5.0, base=TP.halfW+2.6+Math.random()*1.2;
+          const x=TP.x[st]+nx*base, z=TP.z[st]+nz*base, gy=terrainHeight(x,z);
+          setR(wrock,iw,x,gy+h*0.30,z, 2.0+Math.random()*1.6, h*0.62, 2.4+Math.random()*1.8, Math.random()*6, granite(true)); iw++;
+          // второй ряд позади — глубина скалы
+          if(iw<NW && Math.random()<0.7){
+            const b2=base+2.8+Math.random()*2.2, x2=TP.x[st]+nx*b2, z2=TP.z[st]+nz*b2;
+            setR(wrock,iw,x2,terrainHeight(x2,z2)+h*0.42,z2, 2.6+Math.random()*2.0, h*0.85, 3.0+Math.random()*2.2, Math.random()*6, granite(false)); iw++;
+          }
+        }
+      }
+    }
+    wrock.count=iw; flag(wrock); treesGroup.add(wrock);
+  }
 }
 
 // ==========================================================================
@@ -1558,7 +1614,7 @@ function loop(now){
   fpsN++; if(!fpsT) fpsT=now;
   if(now-fpsT>1000){
     fpsVal=Math.round(fpsN*1000/(now-fpsT)); fpsN=0; fpsT=now; qLabel();
-    if(mode==='play' && fpsVal<34){ fpsLow++; } else fpsLow=0;
+    if(mode==='play' && fpsVal<34 && !document.hidden){ fpsLow++; } else fpsLow=0;   // в свёрнутой вкладке не считаем
     if(fpsLow>=2 && cfg.q>0 && autoDrops<2){ autoDrops++; fpsLow=0; cfg.q--; saveCfg(); applyQuality(true); qLabel(); }
   }
   if(mode==='play'){ acc+=dt; let n=0; while(acc>=STEP&&n<8){ if(!panelOpen) stepPhysics(STEP); acc-=STEP;n++;} updatePlay(dt); }
