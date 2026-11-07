@@ -432,10 +432,172 @@ function buildMountains() {
 }
 buildMountains();
 
+// ==========================================================================
+//  ЛИСТВА КАРТОЧКАМИ (alpha-cards) — как в «настоящих» движках
+//  Крона собирается не из конусов, а из прозрачных карточек с нарисованной
+//  листвой. Поэтому крона «пушистая», а не геометричная.
+//  Все числа ниже можно править: это густота, размер и цвет.
+// ==========================================================================
+const FOL = {
+  leafCards:  IS_MOBILE ? 8  : 13,   // карточек в кроне лиственного
+  needleCards:IS_MOBILE ? 13 : 22,   // карточек в кроне ёлки
+  bushCards:  IS_MOBILE ? 3  : 4,    // карточек в кусте
+  ballR: 3.6,                        // радиус шапки лиственного (метры)
+  coneR: 2.6, coneH: 9.0,            // основание и высота ёлки (метры)
+  cut: 0.42                          // порог прозрачности (меньше — листва гуще)
+};
+
+// --- процедурные текстуры (рисуются один раз на canvas) ---
+let _texLeaf=null, _texNeedle=null, _texGrass=null;
+function texFin(c){
+  const t=new THREE.CanvasTexture(c); t.colorSpace=THREE.SRGBColorSpace;
+  const mx=renderer.capabilities.getMaxAnisotropy(); t.anisotropy=Math.min(4,mx||1);
+  return t;
+}
+// пучок листьев: 40 листиков, к краям реже — силуэт рваный, не круглый
+function texLeaf(){
+  if(_texLeaf) return _texLeaf;
+  const S=128, c=cnv(S,S), g=c.getContext('2d');
+  const leaf=(x,y,r,a,h,l)=>{
+    g.save(); g.translate(x,y); g.rotate(a);
+    g.fillStyle=`hsl(${h},52%,${l}%)`;
+    g.beginPath(); g.moveTo(0,-r);
+    g.quadraticCurveTo(r*0.6,-r*0.15, 0,r); g.quadraticCurveTo(-r*0.6,-r*0.15, 0,-r);
+    g.fill();
+    g.strokeStyle=`hsl(${h},46%,${Math.max(18,l-16)}%)`; g.lineWidth=Math.max(1,r*0.09);
+    g.beginPath(); g.moveTo(0,-r*0.8); g.lineTo(0,r*0.8); g.stroke();
+    g.restore();
+  };
+  for(let i=0;i<54;i++){
+    const ang=Math.random()*Math.PI*2, rr=Math.pow(Math.random(),0.62)*S*0.46;
+    const x=S/2+Math.cos(ang)*rr, y=S/2+Math.sin(ang)*rr;
+    leaf(x,y, 8+Math.random()*9, Math.random()*Math.PI*2, 92+Math.random()*34, 40+Math.random()*24);
+  }
+  return (_texLeaf=texFin(c));
+}
+// хвоя: несколько веточек, от каждой — иголки «ёлочкой»
+function texNeedle(){
+  if(_texNeedle) return _texNeedle;
+  const S=128, c=cnv(S,S), g=c.getContext('2d');
+  for(let b=0;b<6;b++){
+    const y0=12+b*20+Math.random()*6, tilt=(Math.random()*2-1)*0.22;
+    g.save(); g.translate(4,y0); g.rotate(tilt);
+    g.strokeStyle='hsl(104,38%,30%)'; g.lineWidth=2.2;
+    g.beginPath(); g.moveTo(0,0); g.lineTo(S-10,0); g.stroke();
+    for(let n=0;n<26;n++){
+      const x=4+n*(S-16)/26, len=5+Math.random()*9, up=(n%2?-1:1);
+      g.strokeStyle=`hsl(${98+Math.random()*22},${34+Math.random()*18}%,${30+Math.random()*20}%)`;
+      g.lineWidth=1.3+Math.random()*0.8;
+      g.beginPath(); g.moveTo(x,0); g.lineTo(x+len*0.55, up*len); g.stroke();
+      g.beginPath(); g.moveTo(x,0); g.lineTo(x+len*0.55, -up*len*0.8); g.stroke();
+    }
+    g.restore();
+  }
+  return (_texNeedle=texFin(c));
+}
+// трава: 9 травинок от нижнего края карточки
+function texGrass(){
+  if(_texGrass) return _texGrass;
+  const S=64, c=cnv(S,S), g=c.getContext('2d');
+  for(let i=0;i<9;i++){
+    const x=4+Math.random()*(S-8), h=S*(0.45+Math.random()*0.5), w=1.6+Math.random()*1.8;
+    const bend=(Math.random()*2-1)*10;
+    g.fillStyle=`hsl(${86+Math.random()*34},${44+Math.random()*20}%,${34+Math.random()*22}%)`;
+    g.beginPath(); g.moveTo(x-w,S); g.quadraticCurveTo(x-w*0.4,S-h*0.5, x+bend,S-h);
+    g.quadraticCurveTo(x+w*0.6,S-h*0.5, x+w,S); g.fill();
+  }
+  return (_texGrass=texFin(c));
+}
+// материалы создаём один раз (иначе при смене трассы они копились бы в памяти)
+let _matLeaf=null,_matNeedle=null,_matGrass=null;
+function folMat(tex,rough,cut){
+  const m=new THREE.MeshStandardMaterial({ map:tex, alphaTest:cut||FOL.cut, side:THREE.FrontSide,
+    roughness:rough, metalness:0, envMapIntensity:0.45 });
+  m.alphaToCoverage=true;   // мягкий край листвы по сглаживанию экрана
+  return m;
+}
+const matLeaf  =()=>_matLeaf  ||(_matLeaf  =folMat(texLeaf(),0.92));
+const matNeedle=()=>_matNeedle||(_matNeedle=folMat(texNeedle(),0.98));
+const matGrass =()=>_matGrass ||(_matGrass =folMat(texGrass(),0.95,0.3));
+
+// --- набор карточек -> одна геометрия ---
+// Каждая карточка добавлена дважды (в обе стороны обхода), нормаль наружу:
+// так свет на кроне ровный с любой стороны, без тёмных «провалов».
+function cardsGeo(cards){
+  const pos=[],nor=[],uv=[],idx=[], v=new THREE.Vector3();
+  const QX=[-0.5,0.5,0.5,-0.5], QY=[-0.5,-0.5,0.5,0.5], UX=[0,1,1,0], UY=[0,0,1,1];
+  cards.forEach((cd,i)=>{
+    for(let k=0;k<4;k++){
+      v.set(QX[k],QY[k],0).applyMatrix4(cd.m); pos.push(v.x,v.y,v.z);
+      nor.push(cd.n.x,cd.n.y,cd.n.z); uv.push(UX[k],UY[k]);
+    }
+    const b=i*4;
+    idx.push(b,b+1,b+2, b,b+2,b+3);   // лицом вперёд
+    idx.push(b,b+2,b+1, b,b+3,b+2);   // и лицом назад
+  });
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos,3));
+  g.setAttribute('normal',   new THREE.Float32BufferAttribute(nor,3));
+  g.setAttribute('uv',       new THREE.Float32BufferAttribute(uv,2));
+  g.setIndex(idx); g.computeBoundingSphere();
+  return g;
+}
+const _up=new THREE.Vector3(0,1,0);
+// шапка лиственного: карточки по сфере, лицом наружу, центр геометрии — центр шапки
+function geoBall(n,R,flat){
+  const cards=[], GA=Math.PI*(3-Math.sqrt(5));
+  for(let i=0;i<n;i++){
+    const t=(i+0.5)/n, ph=Math.acos(1-2*t), th=GA*i;
+    const dir=new THREE.Vector3(Math.sin(ph)*Math.cos(th), Math.cos(ph)*flat, Math.sin(ph)*Math.sin(th)).normalize();
+    const p=dir.clone().multiplyScalar(R*(0.44+Math.random()*0.22));
+    const s=R*(1.25+Math.random()*0.45);
+    const nrm=dir.clone().addScaledVector(_up,0.3).normalize();
+    const q=new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,0,1), dir);
+    q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,0,1), Math.random()*Math.PI*2));
+    cards.push({ m:new THREE.Matrix4().compose(p,q,new THREE.Vector3(s,s,s)), n:nrm });
+  }
+  return cardsGeo(cards);
+}
+// крона ёлки: карточки вокруг ствола, ярусами, кверху мельче; низ геометрии — y=0
+function geoCone(n,R,H){
+  const cards=[];
+  for(let i=0;i<n;i++){
+    const t=i/(n-1), y=H*(0.05+t*0.9), r=R*(1-t*0.88)+0.12;
+    const a=i*2.39996+Math.random()*0.4;
+    const dir=new THREE.Vector3(Math.cos(a),0,Math.sin(a));
+    const p=dir.clone().multiplyScalar(r*0.52).setY(y);
+    const s=Math.max(0.85, R*(1.95-t*1.3));
+    const nrm=dir.clone().addScaledVector(_up,0.55).normalize();
+    const q=new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,0,1), dir);
+    q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,0,1), (Math.random()*2-1)*0.5));
+    cards.push({ m:new THREE.Matrix4().compose(p,q,new THREE.Vector3(s,s*0.95,s)), n:nrm });
+  }
+  return cardsGeo(cards);
+}
+// трава/мелочь: две скрещенные карточки, растут от y=0 вверх
+function geoCross(w,h){
+  const cards=[];
+  for(let k=0;k<2;k++){
+    const a=k*Math.PI/2;
+    const q=new THREE.Quaternion().setFromAxisAngle(_up,a);
+    cards.push({ m:new THREE.Matrix4().compose(new THREE.Vector3(0,h/2,0),q,new THREE.Vector3(w,h,1)), n:new THREE.Vector3(0,1,0) });
+  }
+  return cardsGeo(cards);
+}
+
 // ---------- деревья (инстансы), не на трассе ----------
 function buildTrees() {
   disposeGroup(treesGroup);
-  const onTrack=(x,z)=>{ for(const c of trackCenters){ const dx=x-c.x,dz=z-c.y; if(dx*dx+dz*dz<20*20) return true; } return false; };
+  // «далеко ли от трассы» — через сетку клетками по 24 м, иначе 2200 деревьев
+  // искали бы себе место несколько секунд
+  const CELL=24, grid=new Map();
+  for(const c of trackCenters){ const k=Math.floor(c.x/CELL)+','+Math.floor(c.y/CELL);
+    let a=grid.get(k); if(!a){ a=[]; grid.set(k,a); } a.push(c); }
+  const d2track=(x,z)=>{ const gx=Math.floor(x/CELL), gz=Math.floor(z/CELL); let best=1e9;
+    for(let i=-2;i<=2;i++) for(let j=-2;j<=2;j++){ const a=grid.get((gx+i)+','+(gz+j)); if(!a) continue;
+      for(const c of a){ const dx=x-c.x, dz=z-c.y, d=dx*dx+dz*dz; if(d<best) best=d; } }
+    return best; };
+  const onTrack=(x,z)=> d2track(x,z) < 20*20;
   const nearPond=(x,z)=> (x-34)*(x-34)+(z-22)*(z-22) < 20*20;
   const m=new THREE.Matrix4(), q=new THREE.Quaternion(), pos=new THREE.Vector3(), scl=new THREE.Vector3(), col=new THREE.Color();
   const upY=a=>{ q.setFromAxisAngle(new THREE.Vector3(0,1,0), a); return q; };
@@ -443,44 +605,61 @@ function buildTrees() {
 
   const setT=(im,idx,x,y,z,s,c)=>{ pos.set(x,y,z); scl.set(s,s,s); m.compose(pos,q,scl); im.setMatrixAt(idx,m); if(c) im.setColorAt(idx,c); };
 
-  // стволы + объёмные кроны: ёлки в 3 яруса конусов, лиственные — 2 пышные шапки
-  const trunkG=new THREE.CylinderGeometry(0.2,0.32,2.2,6), trunkM=new THREE.MeshStandardMaterial({color:'#6b4a2b',roughness:1});
-  const coneG=new THREE.ConeGeometry(1.5,2.0,8), blobG=new THREE.IcosahedronGeometry(1.7,0);
-  const greenM=()=>new THREE.MeshStandardMaterial({roughness:1,flatShading:true});
-  const NT=IS_MOBILE?120:220;
-  const trunks=new THREE.InstancedMesh(trunkG,trunkM,NT);
-  const p1=new THREE.InstancedMesh(coneG,greenM(),NT), p2=new THREE.InstancedMesh(coneG,greenM(),NT), p3=new THREE.InstancedMesh(coneG,greenM(),NT);
-  const l1=new THREE.InstancedMesh(blobG,greenM(),NT), l2=new THREE.InstancedMesh(blobG,greenM(),NT);
-  [p1,p2,p3,l1,l2].forEach(im=>im.castShadow=true);
-  let it=0,ip=0,il=0,tries=0;
+  // стволы + кроны из карточек листвы (по две разные кроны каждого вида,
+  // чтобы деревья не выглядели близнецами)
+  // ствол 5,4 м: машина 4,5 м длиной — дерево должно быть заметно выше неё
+  const trunkG=new THREE.CylinderGeometry(0.3,0.52,5.4,6), trunkM=new THREE.MeshStandardMaterial({color:'#6b4a2b',roughness:1});
+  const NT=IS_MOBILE?1100:2200;                  // сколько деревьев на карте
+  const CAPF=Math.ceil(NT*0.62), CAPN=Math.ceil(NT*0.22);
+  const gBall=[ geoBall(FOL.leafCards,FOL.ballR,0.78), geoBall(FOL.leafCards+2,FOL.ballR*0.82,0.95) ];
+  const gCone=[ geoCone(FOL.needleCards,FOL.coneR,FOL.coneH), geoCone(FOL.needleCards+3,FOL.coneR*0.84,FOL.coneH*1.2) ];
+  // у трассы деревья бросают тень, вдали — нет: теней дальнего леса всё равно
+  // не видно, а в каждый кадр они стоят дорого
+  const trunkN=new THREE.InstancedMesh(trunkG,trunkM,CAPN), trunkF=new THREE.InstancedMesh(trunkG,trunkM,NT);
+  const decN=gBall.map(g=>new THREE.InstancedMesh(g,matLeaf(),CAPN)), decF=gBall.map(g=>new THREE.InstancedMesh(g,matLeaf(),CAPF));
+  const conN=gCone.map(g=>new THREE.InstancedMesh(g,matNeedle(),CAPN)), conF=gCone.map(g=>new THREE.InstancedMesh(g,matNeedle(),CAPF));
+  [trunkN,...decN,...conN].forEach(im=>im.castShadow=true);
+  let it=0, tn=0, tf=0, cdn=[0,0], cdf=[0,0], ccn=[0,0], ccf=[0,0], tries=0;
   while(it<NT && tries<NT*25){ tries++;
-    const a=Math.random()*Math.PI*2, d=45+Math.random()*680, x=Math.cos(a)*d, z=Math.sin(a)*d;
-    if(onTrack(x,z)||nearPond(x,z)) continue;
-    const gy=terrainHeight(x,z), s=0.8+Math.random()*1.4; upY(Math.random()*6);
-    setT(trunks,it,x,gy+1.1*s,z,s);
-    if(Math.random()<0.5){ col.setHSL(0.31+Math.random()*0.06,0.45,0.22+Math.random()*0.1);
-      setT(p1,ip,x,gy+2.0*s,z,s,col); setT(p2,ip,x,gy+3.0*s,z,s*0.72,col); setT(p3,ip,x,gy+3.8*s,z,s*0.48,col); ip++;
-    } else { col.setHSL(0.24+Math.random()*0.1,0.5,0.32+Math.random()*0.12);
-      setT(l1,il,x,gy+2.6*s,z,s,col); setT(l2,il,x,gy+3.5*s,z,s*0.7,col); il++; }
+    // 7 из 10 деревьев сажаем лентой вдоль трассы (их видно), остальные — по всей карте
+    let x,z;
+    if(Math.random()<0.7 && trackCenters.length){
+      const c=trackCenters[(Math.random()*trackCenters.length)|0], a2=Math.random()*Math.PI*2, r2=22+Math.random()*115;
+      x=c.x+Math.cos(a2)*r2; z=c.y+Math.sin(a2)*r2;
+    } else { const a=Math.random()*Math.PI*2, d=45+Math.random()*680; x=Math.cos(a)*d; z=Math.sin(a)*d; }
+    const dt=d2track(x,z); if(dt<20*20 || nearPond(x,z)) continue;
+    const k=it&1, isCon=Math.random()<0.5;
+    const cn=isCon?ccn:cdn, cf=isCon?ccf:cdf;
+    const useNear = dt<55*55 && cn[k]<CAPN && tn<CAPN;
+    if(!useNear && (cf[k]>=CAPF || tf>=NT)) continue;
+    const gy=terrainHeight(x,z), s=0.9+Math.random()*1.0, cy=gy+(isCon?2.6:7.2)*s; upY(Math.random()*6);
+    if(isCon) col.setHSL(0.29+Math.random()*0.05,0.26,0.50+Math.random()*0.16);
+    else      col.setHSL(0.20+Math.random()*0.13,0.28,0.56+Math.random()*0.18);
+    if(useNear){ setT(isCon?conN[k]:decN[k], cn[k], x,cy,z, s, col); cn[k]++; setT(trunkN,tn,x,gy+2.7*s,z,s); tn++; }
+    else       { setT(isCon?conF[k]:decF[k], cf[k], x,cy,z, s, col); cf[k]++; setT(trunkF,tf,x,gy+2.7*s,z,s); tf++; }
     it++;
   }
-  trunks.count=it; p1.count=p2.count=p3.count=ip; l1.count=l2.count=il;
-  [trunks,p1,p2,p3,l1,l2].forEach(flag); treesGroup.add(trunks,p1,p2,p3,l1,l2);
+  trunkN.count=tn; trunkF.count=tf;
+  for(let k=0;k<2;k++){ decN[k].count=cdn[k]; decF[k].count=cdf[k]; conN[k].count=ccn[k]; conF[k].count=ccf[k]; }
+  const all=[trunkN,trunkF,...decN,...decF,...conN,...conF];
+  all.forEach(flag); treesGroup.add(...all);
 
-  // кусты
-  const bushG=new THREE.IcosahedronGeometry(0.6,0), NB=IS_MOBILE?60:110, bushes=new THREE.InstancedMesh(bushG,greenM(),NB);
+  // кусты — маленькие шапки из тех же карточек
+  const bushG=geoBall(FOL.bushCards,0.95,0.85), NB=IS_MOBILE?300:700;
+  const bushes=new THREE.InstancedMesh(bushG,matLeaf(),NB); bushes.castShadow=true;
   let ib=0; tries=0;
   while(ib<NB && tries<NB*25){ tries++; const a=Math.random()*Math.PI*2,d=25+Math.random()*700,x=Math.cos(a)*d,z=Math.sin(a)*d;
     if(onTrack(x,z)||nearPond(x,z)) continue; const gy=terrainHeight(x,z),s=0.7+Math.random(); upY(Math.random()*6);
-    col.setHSL(0.27+Math.random()*0.08,0.45,0.3+Math.random()*0.1); setT(bushes,ib,x,gy+0.45*s,z,s,col); ib++; }
+    col.setHSL(0.25+Math.random()*0.09,0.30,0.48+Math.random()*0.14); setT(bushes,ib,x,gy+0.75*s,z,s,col); ib++; }
   bushes.count=ib; flag(bushes); treesGroup.add(bushes);
 
-  // трава — пучки у земли в игровой зоне, оживляют картинку
-  const tuftG=new THREE.ConeGeometry(0.16,0.6,4), NG=IS_MOBILE?300:700, tufts=new THREE.InstancedMesh(tuftG,greenM(),NG);
+  // трава — скрещенные карточки с травинками, оживляют землю
+  const tuftG=geoCross(1.25,0.95), NG=IS_MOBILE?900:2400;
+  const tufts=new THREE.InstancedMesh(tuftG,matGrass(),NG);
   let ig=0; tries=0;
   while(ig<NG && tries<NG*8){ tries++; const a=Math.random()*Math.PI*2,d=18+Math.random()*300,x=Math.cos(a)*d,z=Math.sin(a)*d;
     if(onTrack(x,z)||nearPond(x,z)) continue; const gy=terrainHeight(x,z),s=0.6+Math.random()*0.9; upY(Math.random()*6);
-    col.setHSL(0.26+Math.random()*0.08,0.5,0.32+Math.random()*0.1); setT(tufts,ig,x,gy+0.3*s,z,s,col); ig++; }
+    col.setHSL(0.24+Math.random()*0.09,0.32,0.52+Math.random()*0.16); setT(tufts,ig,x,gy,z,s,col); ig++; }
   tufts.count=ig; flag(tufts); treesGroup.add(tufts);
 
   // камни
