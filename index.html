@@ -371,7 +371,7 @@ const TRACKS = [
   { name:'Длинная',   w:9.5, cp:[[0,-200],[140,-170],[205,-40],[175,95],[70,155],[-70,165],[-195,90],[-225,-55],[-140,-175],[-50,-210]] },
   { name:'Техничная', w:7.0, cp:[[0,-95],[70,-100],[100,-30],[62,18],[92,72],[24,96],[-42,74],[-30,16],[-92,22],[-100,-48],[-58,-96]] },
 ];
-let trackCenters = [], trackCurve = null;
+let trackCenters = [], trackCurve = null, TP = null, offRoad = false;
 const trackGroup = new THREE.Group(); scene.add(trackGroup);
 const treesGroup = new THREE.Group(); scene.add(treesGroup);
 function disposeGroup(grp){ while(grp.children.length){ const c=grp.children.pop(); if(c.geometry)c.geometry.dispose(); } }
@@ -381,10 +381,14 @@ function buildTrack(conf) {
   const curve = new THREE.CatmullRomCurve3(cp, true, 'catmullrom', 0.5);
   const STEPS = 600, halfW = conf.w, kerb = 1.3;
   const rp=[], ru=[], kLp=[], kRp=[], ku=[], idx=[];
+  // точки осевой линии и нормали — нужны отбойникам и физике
+  const TPx=new Float32Array(STEPS+1), TPz=new Float32Array(STEPS+1),
+        TPnx=new Float32Array(STEPS+1), TPnz=new Float32Array(STEPS+1);
   let dist = 0; const prev = new THREE.Vector3();
   for (let i=0;i<=STEPS;i++){
     const t=i/STEPS, p=curve.getPointAt(t), tan=curve.getTangentAt(t);
     const n = new THREE.Vector3(-tan.z,0,tan.x).normalize();
+    TPx[i]=p.x; TPz[i]=p.z; TPnx[i]=n.x; TPnz[i]=n.z;
     if(i>0) dist += p.distanceTo(prev); prev.copy(p);
     if (i%4===0) trackCenters.push(new THREE.Vector2(p.x,p.z));
     const L=p.clone().addScaledVector(n,halfW), R=p.clone().addScaledVector(n,-halfW);
@@ -417,6 +421,82 @@ function buildTrack(conf) {
   const kmat=new THREE.MeshStandardMaterial({map:kt,roughness:.8,side:THREE.DoubleSide});
   const kl=new THREE.Mesh(mk(kLp,ku),kmat); kl.receiveShadow=true; trackGroup.add(kl);
   const kr=new THREE.Mesh(mk(kRp,ku),kmat); kr.receiveShadow=true; trackGroup.add(kr);
+
+  // ---------- отбойники: машина больше не улетает с трассы ----------
+  // Проём один — съезд на грунтовку к ферме, он отмечен указателем.
+  const WOFF=halfW+kerb+0.9, WLO=0.45, WHI=1.2;     // где стоит отбойник и его высота
+  const cell=24, gmap=new Map();
+  for(let i=0;i<=STEPS;i++){ const k=Math.floor(TPx[i]/cell)+','+Math.floor(TPz[i]/cell);
+    let a=gmap.get(k); if(!a){a=[];gmap.set(k,a);} a.push(i); }
+  const wrapNear=(i,c,h)=>{ let d=Math.abs(i-c); if(d>STEPS/2) d=STEPS+1-d; return d<=h; };
+  let gi=0, gbest=1e9;                                // ближайшая к арке фермы точка трассы
+  for(let i=0;i<=STEPS;i++){ const dx=TPx[i]-farmEntryTrig.x, dz=TPz[i]-farmEntryTrig.z, d=dx*dx+dz*dz; if(d<gbest){gbest=d;gi=i;} }
+  const gSide=((farmEntryTrig.x-TPx[gi])*TPnx[gi]+(farmEntryTrig.z-TPz[gi])*TPnz[gi])<0?-1:1;
+  const gHalf=Math.max(4,Math.round(13/(dist/STEPS)));  // ширина проёма ~26 м
+  TP={ x:TPx, z:TPz, nx:TPnx, nz:TPnz, halfW, gapI:gi, gapSide:gSide, gapHalf:gHalf, wrapNear,
+       near:(x,z)=>{ const gx=Math.floor(x/cell), gz=Math.floor(z/cell); let bi=-1,bd=1e9;
+         for(let a=-2;a<=2;a++) for(let b=-2;b<=2;b++){ const arr=gmap.get((gx+a)+','+(gz+b)); if(!arr) continue;
+           for(const i of arr){ const dx=x-TPx[i], dz=z-TPz[i], d=dx*dx+dz*dz; if(d<bd){bd=d;bi=i;} } }
+         return bi; } };
+
+  const bc=cnv(64,32), bgc=bc.getContext('2d');       // красно-белая лента отбойника
+  bgc.fillStyle='#e9edf2'; bgc.fillRect(0,0,64,32); bgc.fillStyle='#d23b3b'; bgc.fillRect(0,0,64,9);
+  const bt=new THREE.CanvasTexture(bc); bt.wrapS=bt.wrapT=THREE.RepeatWrapping; bt.colorSpace=THREE.SRGBColorSpace;
+  const railM=new THREE.MeshStandardMaterial({map:bt,roughness:.42,metalness:.45,envMapIntensity:1.2,side:THREE.DoubleSide});
+  const postM=new THREE.MeshStandardMaterial({color:'#9aa2ab',roughness:.6,metalness:.4});
+  const postG=new THREE.BoxGeometry(0.16,WHI+0.1,0.16);
+  const rail=(side)=>{
+    const pos=[],uv=[],ix=[]; let v=0;
+    for(let i=0;i<=STEPS;i++){
+      if(i>0){ const dx=TPx[i]-TPx[i-1], dz=TPz[i]-TPz[i-1]; v+=Math.hypot(dx,dz)/3; }
+      const ox=TPnx[i]*side*WOFF, oz=TPnz[i]*side*WOFF;
+      pos.push(TPx[i]+ox,WLO,TPz[i]+oz, TPx[i]+ox,WHI,TPz[i]+oz); uv.push(0,v, 1,v);
+    }
+    for(let i=0;i<STEPS;i++){
+      if(side===gSide && wrapNear(i,gi,gHalf)) continue;        // проём на ферму
+      const a=i*2,b=i*2+1,c=(i+1)*2,d=(i+1)*2+1; ix.push(a,b,c, b,d,c);
+    }
+    const g=new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos,3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(uv,2));
+    g.setIndex(ix); g.computeVertexNormals();
+    const mesh=new THREE.Mesh(g,railM); mesh.receiveShadow=true; trackGroup.add(mesh);
+    // столбики
+    const step=6, cnt=Math.floor(STEPS/step)+1, posts=new THREE.InstancedMesh(postG,postM,cnt);
+    const mm=new THREE.Matrix4(), qq=new THREE.Quaternion(), vv=new THREE.Vector3(), ss=new THREE.Vector3(1,1,1);
+    let ip=0;
+    for(let i=0;i<=STEPS;i+=step){
+      if(side===gSide && wrapNear(i,gi,gHalf)) continue;
+      vv.set(TPx[i]+TPnx[i]*side*(WOFF+0.1),(WHI+0.1)/2,TPz[i]+TPnz[i]*side*(WOFF+0.1));
+      qq.setFromAxisAngle(new THREE.Vector3(0,1,0), Math.atan2(TPnx[i],TPnz[i]));
+      mm.compose(vv,qq,ss); posts.setMatrixAt(ip++,mm);
+    }
+    posts.count=ip; posts.instanceMatrix.needsUpdate=true; posts.castShadow=true; trackGroup.add(posts);
+  };
+  rail(1); rail(-1);
+
+  // ---------- грунтовка от проёма к арке фермы ----------
+  const gx0=TPx[gi]+TPnx[gi]*gSide*halfW, gz0=TPz[gi]+TPnz[gi]*gSide*halfW;
+  const ddx=farmEntryTrig.x-gx0, ddz=farmEntryTrig.z-gz0, dlen=Math.hypot(ddx,ddz);
+  if(dlen>4){
+    const dc=cnv(64,64), dg=dc.getContext('2d');
+    dg.fillStyle='#8b6f4e'; dg.fillRect(0,0,64,64);
+    for(let i=0;i<500;i++){ const v2=90+Math.random()*60; dg.fillStyle=`rgba(${v2},${v2*0.78},${v2*0.55},.6)`; dg.fillRect(Math.random()*64,Math.random()*64,2,2); }
+    dg.fillStyle='rgba(120,98,70,.7)'; dg.fillRect(14,0,6,64); dg.fillRect(44,0,6,64);   // колеи
+    const dt2=new THREE.CanvasTexture(dc); dt2.wrapS=dt2.wrapT=THREE.RepeatWrapping; dt2.colorSpace=THREE.SRGBColorSpace;
+    dt2.repeat.set(1.4, dlen/7);
+    const road2=new THREE.Mesh(new THREE.PlaneGeometry(13,dlen+8),
+      new THREE.MeshStandardMaterial({map:dt2,roughness:1,metalness:0}));
+    road2.rotation.order='YXZ';
+    road2.rotation.y=Math.atan2(-ddx/dlen,-ddz/dlen); road2.rotation.x=-Math.PI/2;
+    road2.position.set((gx0+farmEntryTrig.x)/2,0.04,(gz0+farmEntryTrig.z)/2);
+    road2.receiveShadow=true; trackGroup.add(road2);
+    // указатель у съезда
+    const sg=signBoard('ФЕРМА \u2192','#3a2340');
+    sg.position.set(gx0+TPnx[gi]*gSide*2.5, 0, gz0+TPnz[gi]*gSide*2.5);
+    sg.rotation.y=Math.atan2(-TPnx[gi]*gSide,-TPnz[gi]*gSide);
+    trackGroup.add(sg);
+  }
   return curve;
 }
 
@@ -619,47 +699,104 @@ function buildTrees() {
   const decN=gBall.map(g=>new THREE.InstancedMesh(g,matLeaf(),CAPN)), decF=gBall.map(g=>new THREE.InstancedMesh(g,matLeaf(),CAPF));
   const conN=gCone.map(g=>new THREE.InstancedMesh(g,matNeedle(),CAPN)), conF=gCone.map(g=>new THREE.InstancedMesh(g,matNeedle(),CAPF));
   [trunkN,...decN,...conN].forEach(im=>im.castShadow=true);
-  let it=0, tn=0, tf=0, cdn=[0,0], cdf=[0,0], ccn=[0,0], ccf=[0,0], tries=0;
-  while(it<NT && tries<NT*25){ tries++;
-    // 7 из 10 деревьев сажаем лентой вдоль трассы (их видно), остальные — по всей карте
-    let x,z;
-    if(Math.random()<0.7 && trackCenters.length){
-      const c=trackCenters[(Math.random()*trackCenters.length)|0], a2=Math.random()*Math.PI*2, r2=22+Math.random()*115;
-      x=c.x+Math.cos(a2)*r2; z=c.y+Math.sin(a2)*r2;
-    } else { const a=Math.random()*Math.PI*2, d=45+Math.random()*680; x=Math.cos(a)*d; z=Math.sin(a)*d; }
-    const dt=d2track(x,z); if(dt<20*20 || nearPond(x,z)) continue;
-    const k=it&1, isCon=Math.random()<0.5;
-    const cn=isCon?ccn:cdn, cf=isCon?ccf:cdf;
+  let it=0, tn=0, tf=0, cdn=[0,0], cdf=[0,0], ccn=[0,0], ccf=[0,0];
+
+  // ---------- участки пейзажа вдоль трассы ----------
+  // Трасса поделена на куски, у каждого свой характер. Список можно править:
+  //   ель   — густой хвойный лес стеной
+  //   роща  — лиственная роща
+  //   смесь — обычный смешанный лес, пореже
+  //   поле  — открытое поле, деревья поодиночке
+  //   аллея — ровный ряд декоративных деревьев вдоль дороги
+  const SECTORS=['ель','ель','роща','поле','смесь','аллея','ель','поле','смесь',
+                 'роща','поле','аллея','ель','смесь','поле','роща','смесь','поле'];
+  const WEIGHT={'ель':1.7,'роща':1.25,'смесь':0.9,'поле':0.10,'аллея':0.45};
+  const NSEC=SECTORS.length, nC=trackCenters.length||1;
+  const secAt=(x,z)=>{ let bi=-1,bd=1e9; for(let i=0;i<nC;i++){ const c=trackCenters[i],dx=x-c.x,dz=z-c.y,d=dx*dx+dz*dz; if(d<bd){bd=d;bi=i;} } return SECTORS[Math.floor(bi/nC*NSEC)%NSEC]; };
+
+  // посадка одного дерева: вернёт false, если место не подошло
+  const addTree=(x,z,isCon,s,minD)=>{
+    if(it>=NT) return false;
+    const md=minD||20, dt=d2track(x,z);
+    if(dt<md*md || nearPond(x,z)) return false;
+    const k=it&1, cn=isCon?ccn:cdn, cf=isCon?ccf:cdf;
     const useNear = dt<55*55 && cn[k]<CAPN && tn<CAPN;
-    if(!useNear && (cf[k]>=CAPF || tf>=NT)) continue;
-    const gy=terrainHeight(x,z), s=0.9+Math.random()*1.0, cy=gy+(isCon?2.6:7.2)*s; upY(Math.random()*6);
+    if(!useNear && (cf[k]>=CAPF || tf>=NT)) return false;
+    const gy=terrainHeight(x,z), cy=gy+(isCon?2.6:7.2)*s; upY(Math.random()*6);
     if(isCon) col.setHSL(0.29+Math.random()*0.05,0.26,0.50+Math.random()*0.16);
     else      col.setHSL(0.20+Math.random()*0.13,0.28,0.56+Math.random()*0.18);
     if(useNear){ setT(isCon?conN[k]:decN[k], cn[k], x,cy,z, s, col); cn[k]++; setT(trunkN,tn,x,gy+2.7*s,z,s); tn++; }
     else       { setT(isCon?conF[k]:decF[k], cf[k], x,cy,z, s, col); cf[k]++; setT(trunkF,tf,x,gy+2.7*s,z,s); tf++; }
-    it++;
+    it++; return true;
+  };
+
+  // лес по участкам
+  let wsum=0; for(const b of SECTORS) wsum+=WEIGHT[b];
+  const bodyN=Math.round(NT*0.80);
+  for(let si=0; si<NSEC && it<NT; si++){
+    const b=SECTORS[si], want=Math.round(bodyN*WEIGHT[b]/wsum);
+    const i0=Math.floor(si/NSEC*nC), i1=Math.max(i0+1,Math.floor((si+1)/NSEC*nC));
+    let got=0, tr=0;
+    while(got<want && tr<want*5+40 && it<NT){ tr++;
+      const c=trackCenters[(i0+Math.random()*(i1-i0))|0]; if(!c) break;
+      const a=Math.random()*Math.PI*2;
+      let r, conP;
+      if(b==='ель'){        r=26+Math.pow(Math.random(),0.75)*150; conP=0.88; }
+      else if(b==='роща'){  r=24+Math.pow(Math.random(),0.85)*110; conP=0.10; }
+      else if(b==='поле'){  r=48+Math.random()*190;                conP=0.45; }
+      else {                r=25+Math.random()*165;                conP=0.50; }
+      const s=0.9+Math.random()*1.0;
+      if(addTree(c.x+Math.cos(a)*r, c.y+Math.sin(a)*r, Math.random()<conP, s)) got++;
+    }
   }
+  // аллеи: ровный ряд лиственных по обе стороны дороги
+  if(TP) for(let si=0; si<NSEC && it<NT; si++){
+    if(SECTORS[si]!=='аллея') continue;
+    const j0=Math.floor(si/NSEC*nC), j1=Math.floor((si+1)/NSEC*nC);
+    for(let j=j0;j<j1;j+=3){
+      const st=j*4; if(st>=TP.x.length) break;
+      const nx=TP.nx[st], nz=TP.nz[st], sz=1.15+Math.random()*0.15;
+      for(const sd of [1,-1]) addTree(TP.x[st]+nx*sd*19, TP.z[st]+nz*sd*19, false, sz, 15);
+    }
+  }
+  // дальний лес на горизонте — чтобы край карты не был пустым
+  { let tr=0; while(it<NT && tr<NT*6){ tr++;
+      const a=Math.random()*Math.PI*2, d=200+Math.random()*500;
+      addTree(Math.cos(a)*d, Math.sin(a)*d, Math.random()<0.55, 0.9+Math.random()*1.0); } }
+
   trunkN.count=tn; trunkF.count=tf;
   for(let k=0;k<2;k++){ decN[k].count=cdn[k]; decF[k].count=cdf[k]; conN[k].count=ccn[k]; conF[k].count=ccf[k]; }
   const all=[trunkN,trunkF,...decN,...decF,...conN,...conF];
   all.forEach(flag); treesGroup.add(...all);
 
-  // кусты — маленькие шапки из тех же карточек
+  // кусты — по опушкам леса, в поле почти нет
   const bushG=geoBall(FOL.bushCards,0.95,0.85), NB=IS_MOBILE?300:700;
   const bushes=new THREE.InstancedMesh(bushG,matLeaf(),NB); bushes.castShadow=true;
-  let ib=0; tries=0;
-  while(ib<NB && tries<NB*25){ tries++; const a=Math.random()*Math.PI*2,d=25+Math.random()*700,x=Math.cos(a)*d,z=Math.sin(a)*d;
-    if(onTrack(x,z)||nearPond(x,z)) continue; const gy=terrainHeight(x,z),s=0.7+Math.random(); upY(Math.random()*6);
-    col.setHSL(0.25+Math.random()*0.09,0.30,0.48+Math.random()*0.14); setT(bushes,ib,x,gy+0.75*s,z,s,col); ib++; }
+  let ib=0, tries=0;
+  while(ib<NB && tries<NB*20){ tries++;
+    const c=trackCenters[(Math.random()*nC)|0]; if(!c) break;
+    const a=Math.random()*Math.PI*2, r=24+Math.random()*140;
+    const x=c.x+Math.cos(a)*r, z=c.y+Math.sin(a)*r;
+    if(onTrack(x,z)||nearPond(x,z)) continue;
+    if(secAt(x,z)==='поле' && Math.random()<0.8) continue;
+    const gy=terrainHeight(x,z),sc=0.7+Math.random(); upY(Math.random()*6);
+    col.setHSL(0.25+Math.random()*0.09,0.30,0.48+Math.random()*0.14); setT(bushes,ib,x,gy+0.75*sc,z,sc,col); ib++; }
   bushes.count=ib; flag(bushes); treesGroup.add(bushes);
 
-  // трава — скрещенные карточки с травинками, оживляют землю
+  // трава: в поле — выше и желтее, в лесу — зелёная
   const tuftG=geoCross(1.25,0.95), NG=IS_MOBILE?900:2400;
   const tufts=new THREE.InstancedMesh(tuftG,matGrass(),NG);
   let ig=0; tries=0;
-  while(ig<NG && tries<NG*8){ tries++; const a=Math.random()*Math.PI*2,d=18+Math.random()*300,x=Math.cos(a)*d,z=Math.sin(a)*d;
-    if(onTrack(x,z)||nearPond(x,z)) continue; const gy=terrainHeight(x,z),s=0.6+Math.random()*0.9; upY(Math.random()*6);
-    col.setHSL(0.24+Math.random()*0.09,0.32,0.52+Math.random()*0.16); setT(tufts,ig,x,gy,z,s,col); ig++; }
+  while(ig<NG && tries<NG*8){ tries++;
+    const c=trackCenters[(Math.random()*nC)|0]; if(!c) break;
+    const a=Math.random()*Math.PI*2, r=14+Math.random()*120;
+    const x=c.x+Math.cos(a)*r, z=c.y+Math.sin(a)*r;
+    if(onTrack(x,z)||nearPond(x,z)) continue;
+    const field=secAt(x,z)==='поле';
+    const gy=terrainHeight(x,z), sc=(field?0.9:0.6)+Math.random()*(field?1.1:0.9); upY(Math.random()*6);
+    if(field) col.setHSL(0.13+Math.random()*0.06,0.42,0.56+Math.random()*0.14);
+    else      col.setHSL(0.24+Math.random()*0.09,0.32,0.52+Math.random()*0.16);
+    setT(tufts,ig,x,gy,z,sc,col); ig++; }
   tufts.count=ig; flag(tufts); treesGroup.add(tufts);
 
   // камни
@@ -917,6 +1054,24 @@ addEventListener('keydown',e=>{ keys[e.key]=true; if((e.key==='r'||e.key==='R'||
 addEventListener('keyup',e=>keys[e.key]=false);
 const K=(...k)=>k.some(x=>keys[x]);
 
+// отбойник: не пускаем машину за ограждение, но пропускаем в проём к ферме
+function wallClamp(){
+  if(!TP) return;
+  const i=TP.near(car.x,car.z); if(i<0) return;
+  const nx=TP.nx[i], nz=TP.nz[i];
+  const off=(car.x-TP.x[i])*nx+(car.z-TP.z[i])*nz, ab=Math.abs(off), s=off<0?-1:1;
+  if(ab<TP.halfW+1.3) offRoad=false;                 // вернулись на асфальт — отбойник снова работает
+  if(offRoad) return;
+  const lim=TP.halfW+1.25;
+  if(ab<=lim) return;
+  if(s===TP.gapSide && TP.wrapNear(i,TP.gapI,TP.gapHalf)){ offRoad=true; return; }   // съезд на грунтовку
+  const over=ab-lim;
+  car.x-=nx*s*over; car.z-=nz*s*over;                // вернули на трассу
+  const vn=car.vx*nx+car.vz*nz;
+  if(vn*s>0){ car.vx-=nx*vn*1.2; car.vz-=nz*vn*1.2; }    // гасим удар в стену, лёгкий отскок
+  car.vx*=0.985; car.vz*=0.985; car.omega*=0.93;     // чиркнули боком — чуть теряем скорость, но едем дальше
+}
+
 function stepPhysics(dt){
   const thr=K('ArrowUp','w','ц')?1:0, brk=K('ArrowDown','s','ы')?1:0;
   const steerIn=(K('ArrowRight','d','в')?1:0)-(K('ArrowLeft','a','ф')?1:0); // право = +  (руль исправлен)
@@ -968,6 +1123,7 @@ function stepPhysics(dt){
 
   const ddx=car.x-placeCenter.x, ddz=car.z-placeCenter.z, dd=Math.hypot(ddx,ddz);  // держим машину в пределах места
   if(dd>placeRadius){ const k=placeRadius/dd; car.x=placeCenter.x+ddx*k; car.z=placeCenter.z+ddz*k; car.vx*=0.3; car.vz*=0.3; }
+  if(place==='track') wallClamp();
 
   const slip=Math.abs(vLat)/(Math.abs(vLong)+3);
   const drifting=speed>7 && slip>T.driftSlip;
