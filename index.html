@@ -367,11 +367,11 @@ buildPond();
 
 // ---------- трассы (переключаются в гараже) ----------
 const TRACKS = [
-  { name:'Кольцо',    w:8.5, cp:[[0,-140],[95,-120],[135,-35],[100,55],[35,95],[-45,105],[-120,55],[-150,-30],[-95,-115],[-30,-150]] },
-  { name:'Длинная',   w:9.5, cp:[[0,-200],[140,-170],[205,-40],[175,95],[70,155],[-70,165],[-195,90],[-225,-55],[-140,-175],[-50,-210]] },
-  { name:'Техничная', w:7.0, cp:[[0,-95],[70,-100],[100,-30],[62,18],[92,72],[24,96],[-42,74],[-30,16],[-92,22],[-100,-48],[-58,-96]] },
+  { name:'Кольцо',    w:11.5, cp:[[0,-140],[95,-120],[135,-35],[100,55],[35,95],[-45,105],[-120,55],[-150,-30],[-95,-115],[-30,-150]] },
+  { name:'Длинная',   w:12.5, cp:[[0,-200],[140,-170],[205,-40],[175,95],[70,155],[-70,165],[-195,90],[-225,-55],[-140,-175],[-50,-210]] },
+  { name:'Техничная', w:10.0, cp:[[0,-95],[70,-100],[100,-30],[62,18],[92,72],[24,96],[-42,74],[-30,16],[-92,22],[-100,-48],[-58,-96]] },
 ];
-let trackCenters = [], trackCurve = null, TP = null, offRoad = false;
+let trackCenters = [], trackCurve = null, TP = null, offRoad = false, trackLen = 1;
 const trackGroup = new THREE.Group(); scene.add(trackGroup);
 const treesGroup = new THREE.Group(); scene.add(treesGroup);
 function disposeGroup(grp){ while(grp.children.length){ const c=grp.children.pop(); if(c.geometry)c.geometry.dispose(); } }
@@ -404,10 +404,13 @@ function buildTrack(conf) {
     g.setAttribute('uv', new THREE.Float32BufferAttribute(uv,2));
     g.setIndex(idx); g.computeVertexNormals(); return g; };
   // асфальт (мокрый, отражает небо) + пунктир по центру
-  const rc = cnv(64,128), rg = rc.getContext('2d');
-  rg.fillStyle='#26292f'; rg.fillRect(0,0,64,128);
-  for(let i=0;i<800;i++){const v=25+Math.random()*30; rg.fillStyle=`rgba(${v},${v},${v},.6)`; rg.fillRect(Math.random()*64,Math.random()*128,2,2);}
-  rg.fillStyle='#e9e9e9'; rg.fillRect(30,10,4,60);
+  const rc = cnv(256,256), rg = rc.getContext('2d');   // одна плитка = 6 м дороги
+  rg.fillStyle='#26292f'; rg.fillRect(0,0,256,256);
+  for(let i=0;i<4000;i++){const v=25+Math.random()*30; rg.fillStyle=`rgba(${v},${v},${v},.6)`; rg.fillRect(Math.random()*256,Math.random()*256,3,3);}
+  rg.fillStyle='#e9e9e9';
+  rg.fillRect(7,0,4,256); rg.fillRect(245,0,4,256);     // сплошные по краям
+  rg.fillRect(123,0,3,256); rg.fillRect(130,0,3,256);   // двойная осевая посередине
+  rg.fillRect(62,0,4,128); rg.fillRect(190,0,4,128);    // прерывистые между полосами
   const rt=new THREE.CanvasTexture(rc); rt.wrapS=rt.wrapT=THREE.RepeatWrapping; rt.colorSpace=THREE.SRGBColorSpace;
   const rr=cnv(64,128), rrg=rr.getContext('2d'); rrg.fillStyle='#b6b6b6'; rrg.fillRect(0,0,64,128);
   for(let i=0;i<9;i++){ rrg.fillStyle='rgba(40,40,40,.5)'; rrg.fillRect(Math.random()*64,0,4+Math.random()*10,128); }
@@ -421,6 +424,8 @@ function buildTrack(conf) {
   const kmat=new THREE.MeshStandardMaterial({map:kt,roughness:.8,side:THREE.DoubleSide});
   const kl=new THREE.Mesh(mk(kLp,ku),kmat); kl.receiveShadow=true; trackGroup.add(kl);
   const kr=new THREE.Mesh(mk(kRp,ku),kmat); kr.receiveShadow=true; trackGroup.add(kr);
+
+  trackLen = dist;                                   // длина круга — нужна трафику
 
   // ---------- отбойники: машина больше не улетает с трассы ----------
   // Проём один — съезд на грунтовку к ферме, он отмечен указателем.
@@ -663,6 +668,109 @@ function geoCross(w,h){
     cards.push({ m:new THREE.Matrix4().compose(new THREE.Vector3(0,h/2,0),q,new THREE.Vector3(w,h,1)), n:new THREE.Vector3(0,1,0) });
   }
   return cardsGeo(cards);
+}
+
+// ==========================================================================
+//  ПОПУТНЫЙ ТРАФИК — грузовики, фуры, легковые. Их надо объезжать.
+//  Все едут в ту же сторону, что и вы, но медленнее. Числа можно править.
+// ==========================================================================
+const trafficGroup=new THREE.Group(); scene.add(trafficGroup);
+let traffic=[];
+const KINDS=[   // вид: длина, ширина, скорость м/с, полоса (0 — у правого края)
+  {k:'фура',        len:13.5, wid:2.7, v:[8,11],  lanes:[0,1], p:0.16},
+  {k:'грузовик',    len:8.2,  wid:2.5, v:[10,13], lanes:[0,1], p:0.20},
+  {k:'микроавтобус',len:5.6,  wid:2.1, v:[12,16], lanes:[1,2], p:0.18},
+  {k:'внедорожник', len:4.8,  wid:2.1, v:[14,18], lanes:[1,2,3], p:0.20},
+  {k:'легковая',    len:4.4,  wid:1.9, v:[15,20], lanes:[2,3], p:0.26},
+];
+const CARCOLORS=['#d9534f','#4f86d9','#e8c55a','#58b368','#e9edf2','#8a6bd1','#e08d3c','#3fb6c6'];
+const _vg={};   // геометрии создаём один раз и переиспользуем
+const vgeo=(key,make)=> _vg[key]||(_vg[key]=make());
+const vmat=(c,r,m)=>new THREE.MeshStandardMaterial({color:c,roughness:r===undefined?0.45:r,metalness:m===undefined?0.3:m,envMapIntensity:1.2});
+const WHEELM=new THREE.MeshStandardMaterial({color:'#15181f',roughness:.85});
+const GLASSM=new THREE.MeshStandardMaterial({color:'#0d1420',roughness:.1,metalness:.9,envMapIntensity:2});
+function buildVehicle(def){
+  const g=new THREE.Group(), col=CARCOLORS[(Math.random()*CARCOLORS.length)|0];
+  const L=def.len, W=def.wid, wr=L>7?0.55:0.38;
+  const wheelG=vgeo('w'+wr,()=>new THREE.CylinderGeometry(wr,wr,0.34,10));
+  const addWheel=(x,z)=>{ const w=new THREE.Mesh(wheelG,WHEELM); w.rotation.z=Math.PI/2; w.position.set(x,wr,z); g.add(w); };
+  if(def.k==='фура'||def.k==='грузовик'){
+    const cabL=def.k==='фура'?3.0:2.6, boxL=L-cabL-0.5;
+    const cab=new THREE.Mesh(vgeo('cab'+def.k,()=>new THREE.BoxGeometry(W,2.5,cabL)),vmat(col));
+    cab.position.set(0,wr+1.3,L/2-cabL/2); cab.castShadow=true; g.add(cab);
+    const win=new THREE.Mesh(vgeo('cw'+def.k,()=>new THREE.BoxGeometry(W-0.12,0.9,0.12)),GLASSM);
+    win.position.set(0,wr+1.9,L/2-0.1); g.add(win);
+    const box=new THREE.Mesh(vgeo('box'+def.k,()=>new THREE.BoxGeometry(W+0.1,2.9,boxL)),vmat('#eef1f4',.8,.05));
+    box.position.set(0,wr+1.6,L/2-cabL-boxL/2-0.4); box.castShadow=true; g.add(box);
+    addWheel(-W/2,L/2-1.4); addWheel(W/2,L/2-1.4);
+    addWheel(-W/2,-L/2+1.6); addWheel(W/2,-L/2+1.6);
+  } else {
+    const h=def.k==='микроавтобус'?1.9:(def.k==='внедорожник'?1.0:0.72);
+    const body=new THREE.Mesh(vgeo('b'+def.k,()=>new THREE.BoxGeometry(W,h,L)),vmat(col));
+    body.position.set(0,wr+h/2,0); body.castShadow=true; g.add(body);
+    if(def.k!=='микроавтобус'){
+      const ch=def.k==='внедорожник'?0.8:0.6, cl=L*0.45;
+      const cab=new THREE.Mesh(vgeo('c'+def.k,()=>new THREE.BoxGeometry(W-0.25,ch,cl)),vmat(col));
+      cab.position.set(0,wr+h+ch/2-0.03,-L*0.06); cab.castShadow=true; g.add(cab);
+      const win=new THREE.Mesh(vgeo('g'+def.k,()=>new THREE.BoxGeometry(W-0.2,ch*0.75,cl*0.92)),GLASSM);
+      win.position.copy(cab.position); g.add(win);
+    } else {
+      const win=new THREE.Mesh(vgeo('gm',()=>new THREE.BoxGeometry(W-0.1,0.7,L*0.6)),GLASSM);
+      win.position.set(0,wr+h*0.78,L*0.08); g.add(win);
+    }
+    addWheel(-W/2,L/2-1.1); addWheel(W/2,L/2-1.1);
+    addWheel(-W/2,-L/2+1.1); addWheel(W/2,-L/2+1.1);
+  }
+  return g;
+}
+function buildTraffic(){
+  while(trafficGroup.children.length) trafficGroup.remove(trafficGroup.children[0]);
+  traffic=[];
+  if(!trackCurve) return;
+  const N=IS_MOBILE?8:14, halfW=TRACKS[cfg.track].w;
+  for(let i=0;i<N;i++){
+    let r=Math.random(), def=KINDS[KINDS.length-1];
+    for(const d of KINDS){ if(r<d.p){ def=d; break; } r-=d.p; }
+    const lane=def.lanes[(Math.random()*def.lanes.length)|0];
+    const mesh=buildVehicle(def); trafficGroup.add(mesh);
+    traffic.push({ mesh, len:def.len, wid:def.wid,
+      off: halfW*(-0.75+0.5*lane),                     // центр полосы
+      v: def.v[0]+Math.random()*(def.v[1]-def.v[0]),
+      t: 0.06+(i/N)*0.9+Math.random()*0.02,
+      x:0, z:0, dx:1, dz:0 });
+  }
+}
+function updateTraffic(dt){
+  if(!trackCurve) return;
+  for(const v of traffic){
+    v.t=(v.t+v.v*dt/trackLen)%1;
+    const p=trackCurve.getPointAt(v.t), tan=trackCurve.getTangentAt(v.t);
+    v.dx=tan.x; v.dz=tan.z;
+    v.x=p.x-tan.z*v.off; v.z=p.z+tan.x*v.off;
+    v.mesh.position.set(v.x,0,v.z);
+    v.mesh.rotation.y=-Math.atan2(tan.z,tan.x)+Math.PI/2;
+  }
+}
+// столкновение с попуткой: не проезжаем насквозь, а упираемся и теряем скорость
+function trafficClamp(){
+  for(const v of traffic){
+    const rx=car.x-v.x, rz=car.z-v.z;
+    const along=rx*v.dx+rz*v.dz, side=-rx*v.dz+rz*v.dx;
+    const hl=v.len/2+1.9, hw=v.wid/2+1.0;
+    if(Math.abs(along)>=hl || Math.abs(side)>=hw) continue;
+    const oa=hl-Math.abs(along), os=hw-Math.abs(side);
+    if(os<oa){                                   // задели боком — отжимает вбок
+      const sg=side<0?-1:1, nx=-v.dz*sg, nz=v.dx*sg;
+      car.x+=nx*os; car.z+=nz*os;
+      const vn=car.vx*nx+car.vz*nz; if(vn<0){ car.vx-=nx*vn*1.3; car.vz-=nz*vn*1.3; }
+      car.vx*=0.985; car.vz*=0.985; car.omega*=0.9;
+    } else {                                     // въехали в корму — тормозим
+      const sg=along<0?-1:1;
+      car.x+=v.dx*sg*oa; car.z+=v.dz*sg*oa;
+      const vn=car.vx*v.dx*sg+car.vz*v.dz*sg; if(vn<0){ car.vx-=v.dx*sg*vn*1.2; car.vz-=v.dz*sg*vn*1.2; }
+      car.vx*=0.88; car.vz*=0.88; car.omega*=0.8;
+    }
+  }
 }
 
 // ---------- деревья (инстансы), не на трассе ----------
@@ -1010,7 +1118,8 @@ let panelOpen=false, farmZone=null;   // открыта ли панель (ан�
 
 function placeAtStart(){
   const p=trackCurve.getPointAt(0), tan=trackCurve.getTangentAt(0);
-  car.x=p.x+tan.x*7; car.z=p.z+tan.z*7; car.yaw=Math.atan2(tan.z,tan.x);  // чуть за линией старта
+  const lane=-TRACKS[cfg.track].w*0.6;                 // стартуем в крайней полосе, а не по осевой
+  car.x=p.x+tan.x*7-tan.z*lane; car.z=p.z+tan.z*7+tan.x*lane; car.yaw=Math.atan2(tan.z,tan.x);
   car.vx=car.vz=car.omega=car.axPrev=0; steer=0;
 }
 function resetRun(){ placeAtStart(); clearSkids(); score=0; combo=1; driftTime=0; }
@@ -1045,7 +1154,7 @@ function updateLaps(){
   prevD=d;
   updateLapHUD(now-lapStartMs);
 }
-function selectTrack(i){ cfg.track=i; saveCfg(); trackCurve=buildTrack(TRACKS[i]); buildTrees(); buildStartLine(TRACKS[i].w); buildTrackEntry();
+function selectTrack(i){ cfg.track=i; saveCfg(); trackCurve=buildTrack(TRACKS[i]); buildTrees(); buildStartLine(TRACKS[i].w); buildTrackEntry(); buildTraffic();
   if(mode==='play'){ resetRun(); resetLaps(); } }
 
 // ввод
@@ -1123,7 +1232,7 @@ function stepPhysics(dt){
 
   const ddx=car.x-placeCenter.x, ddz=car.z-placeCenter.z, dd=Math.hypot(ddx,ddz);  // держим машину в пределах места
   if(dd>placeRadius){ const k=placeRadius/dd; car.x=placeCenter.x+ddx*k; car.z=placeCenter.z+ddz*k; car.vx*=0.3; car.vz*=0.3; }
-  if(place==='track') wallClamp();
+  if(place==='track'){ wallClamp(); trafficClamp(); }
 
   const slip=Math.abs(vLat)/(Math.abs(vLong)+3);
   const drifting=speed>7 && slip>T.driftSlip;
@@ -1171,6 +1280,8 @@ function updatePlay(dt){
   fxFlash.style.opacity=win_drift?Math.min(0.28+win_combo*0.12,0.8):0;
 
   if(place==='track') updateLaps();
+  trafficGroup.visible = (place==='track');
+  if(place==='track') updateTraffic(dt);
   if(performance.now()>trigLock){   // въезд/выезд и зоны усадьбы
     if(place==='track'){ if(Math.hypot(car.x-farmEntryTrig.x,car.z-farmEntryTrig.z)<farmEntryTrig.r) enterFarm(); }
     else if(place==='farm' && !panelOpen){
@@ -1282,6 +1393,7 @@ function buildFarm(){
 }
 function enterFarm(){
   place='farm'; trigLock=performance.now()+1500; disposeGroup(trackGroup); buildFarm();
+  trafficGroup.visible=false;
   placeCenter={x:0,z:0}; placeRadius=65;
   car.x=farmSpawn.x; car.z=farmSpawn.z; car.yaw=farmSpawn.yaw; car.vx=car.vz=car.omega=car.axPrev=0; steer=0;
   clearSkids(); score=0; combo=1; driftTime=0;
