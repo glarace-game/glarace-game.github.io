@@ -733,17 +733,39 @@ function buildTraffic(){
     for(const d of KINDS){ if(r<d.p){ def=d; break; } r-=d.p; }
     const lane=def.lanes[(Math.random()*def.lanes.length)|0];
     const mesh=buildVehicle(def); trafficGroup.add(mesh);
-    traffic.push({ mesh, len:def.len, wid:def.wid,
+    traffic.push({ mesh, len:def.len, wid:def.wid, lanes:def.lanes, vmin:def.v[0], vmax:def.v[1],
       off: halfW*(-0.75+0.5*lane),                     // центр полосы
       v: def.v[0]+Math.random()*(def.v[1]-def.v[0]),
-      t: 0.06+(i/N)*0.9+Math.random()*0.02,
+      t: 0.05+(i/N)*0.45,                              // все стоят ВПЕРЕДИ старта
       x:0, z:0, dx:1, dz:0 });
   }
 }
+// машину, отставшую от нас, переносим далеко вперёд — чтобы никто не появлялся сзади
+function trafficRespawn(v, pt){
+  const halfW=TRACKS[cfg.track].w;
+  for(let a=0;a<8;a++){
+    const t=(pt+0.26+Math.random()*0.18+1)%1;
+    let ok=true;
+    for(const o of traffic){ if(o===v) continue; let d=o.t-t; if(d>0.5)d-=1; if(d<-0.5)d+=1;
+      if(Math.abs(d)*trackLen<24){ ok=false; break; } }
+    if(ok||a===7){ v.t=t; break; }
+  }
+  const lane=v.lanes[(Math.random()*v.lanes.length)|0];
+  v.off=halfW*(-0.75+0.5*lane);
+  v.v=v.vmin+Math.random()*(v.vmax-v.vmin);
+}
 function updateTraffic(dt){
   if(!trackCurve) return;
+  const pi=TP?TP.near(car.x,car.z):-1, pt=pi<0?null:pi/(TP.x.length-1);
+  const sp=Math.hypot(car.vx,car.vz);
   for(const v of traffic){
-    v.t=(v.t+v.v*dt/trackLen)%1;
+    let vv=v.v;
+    if(pt!==null){
+      let d=v.t-pt; if(d>0.5)d-=1; if(d<-0.5)d+=1;
+      if(d<0 && vv>sp-1) vv=Math.max(3,sp-2);          // сзади никто нас не обгоняет
+      if(d*trackLen<-45){ trafficRespawn(v,pt); vv=v.v; }
+    }
+    v.t=(v.t+vv*dt/trackLen+1)%1;
     const p=trackCurve.getPointAt(v.t), tan=trackCurve.getTangentAt(v.t);
     v.dx=tan.x; v.dz=tan.z;
     v.x=p.x-tan.z*v.off; v.z=p.z+tan.x*v.off;
