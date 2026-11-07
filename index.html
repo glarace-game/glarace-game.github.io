@@ -147,6 +147,7 @@
   <div class="topbtns" id="topbtns">
     <button class="ui" id="soundBtn">Звук вкл</button>
     <button class="ui" id="fxBtn">Эффекты</button>
+    <button class="ui" id="qBtn">Графика</button>
     <button class="ui" id="placeBtn">Ферма ▶</button>
     <button class="ui" id="garageBtn">Гараж</button>
     <button class="ui" id="resetBtn">Заново (R)</button>
@@ -241,16 +242,27 @@ const TUNE_STATS = [
 //  Three.js сцена
 // ==========================================================================
 // пресет качества: на телефоне мягче, чтобы не тормозило (крути числа)
-const IS_MOBILE = matchMedia('(pointer:coarse)').matches || innerWidth < 760;
+const IS_MOBILE = matchMedia('(pointer:coarse)').matches || (innerWidth>0 && innerWidth<760);
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, IS_MOBILE ? 1.5 : 2));
 renderer.setSize(innerWidth, innerHeight);
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.type = THREE.PCFShadowMap;   // мягкие тени дороже в 3 раза — не стоят того
 renderer.toneMapping = THREE.ACESFilmicToneMapping;   // киношный тон (как в CarX)
 renderer.toneMappingExposure = 1.22;                  // общая яркость — крути это число
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 document.getElementById('app').appendChild(renderer.domElement);
+
+// ---------- уровни графики: от этого зависит, тарахтит машина или нет ----------
+// px — во сколько раз чаще считаются точки экрана (главная цена картинки)
+// shadow — размер карты теней (0 = тени выключены), trees — доля деревьев, cars — машин
+const QLEVELS = [
+  { name:'Низкая',  px:1.0,  shadow:0,    trees:0.28, cars:6,  far:620 },
+  { name:'Средняя', px:1.25, shadow:1024, trees:0.55, cars:10, far:820 },
+  { name:'Высокая', px:1.75, shadow:2048, trees:1.0,  cars:14, far:1000 },
+];
+if(cfg.q===undefined || !QLEVELS[cfg.q]) cfg.q = IS_MOBILE?0:1;   // сам выбор не сохраняем — только нажатие кнопки
+const Q = ()=>QLEVELS[cfg.q];
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color('#bfe0ff');
@@ -269,6 +281,22 @@ sun.shadow.camera.left = -70; sun.shadow.camera.right = 70;
 sun.shadow.camera.top = 70; sun.shadow.camera.bottom = -70;
 sun.shadow.bias = -0.0004;
 scene.add(sun); scene.add(sun.target);
+
+function applyQuality(rebuild){
+  const q=Q();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, q.px));
+  renderer.setSize(innerWidth, innerHeight);
+  if(typeof composer!=='undefined' && composer){ composer.setPixelRatio(Math.min(window.devicePixelRatio,q.px)); composer.setSize(innerWidth,innerHeight); }
+  const wasShadow=renderer.shadowMap.enabled, nowShadow=q.shadow>0;
+  renderer.shadowMap.enabled=nowShadow; sun.castShadow=nowShadow;
+  if(nowShadow && sun.shadow.mapSize.x!==q.shadow){
+    sun.shadow.mapSize.set(q.shadow,q.shadow);
+    if(sun.shadow.map){ sun.shadow.map.dispose(); sun.shadow.map=null; }
+  }
+  if(wasShadow!==nowShadow) scene.traverse(o=>{ if(o.material) (Array.isArray(o.material)?o.material:[o.material]).forEach(m=>m.needsUpdate=true); });
+  if(scene.fog) scene.fog.far=q.far;
+  if(rebuild && typeof trackCurve!=='undefined' && trackCurve){ buildTrees(); buildTraffic(); }
+}
 
 // ---------- отражения окружения (env-карта из процедурного неба) ----------
 function envEquirect(){
@@ -727,7 +755,7 @@ function buildTraffic(){
   while(trafficGroup.children.length) trafficGroup.remove(trafficGroup.children[0]);
   traffic=[];
   if(!trackCurve) return;
-  const N=IS_MOBILE?8:14, halfW=TRACKS[cfg.track].w;
+  const N=Q().cars, halfW=TRACKS[cfg.track].w;
   for(let i=0;i<N;i++){
     let r=Math.random(), def=KINDS[KINDS.length-1];
     for(const d of KINDS){ if(r<d.p){ def=d; break; } r-=d.p; }
@@ -819,7 +847,7 @@ function buildTrees() {
   // чтобы деревья не выглядели близнецами)
   // ствол 5,4 м: машина 4,5 м длиной — дерево должно быть заметно выше неё
   const trunkG=new THREE.CylinderGeometry(0.3,0.52,5.4,6), trunkM=new THREE.MeshStandardMaterial({color:'#6b4a2b',roughness:1});
-  const NT=IS_MOBILE?1100:2200;                  // сколько деревьев на карте
+  const NT=Math.round((IS_MOBILE?1100:2200)*Q().trees);   // сколько деревьев на карте
   const CAPF=Math.ceil(NT*0.62), CAPN=Math.ceil(NT*0.22);
   const gBall=[ geoBall(FOL.leafCards,FOL.ballR,0.78), geoBall(FOL.leafCards+2,FOL.ballR*0.82,0.95) ];
   const gCone=[ geoCone(FOL.needleCards,FOL.coneR,FOL.coneH), geoCone(FOL.needleCards+3,FOL.coneR*0.84,FOL.coneH*1.2) ];
@@ -1507,6 +1535,11 @@ document.getElementById('fpClose').onclick=closePanel;
 const fxBtn=document.getElementById('fxBtn');
 fxBtn.textContent = useBloom ? 'Эффекты вкл' : 'Эффекты выкл';
 fxBtn.onclick=()=>{ useBloom=!useBloom; fxBtn.textContent=useBloom?'Эффекты вкл':'Эффекты выкл'; };
+const qBtn=document.getElementById('qBtn');
+let fpsVal=0;
+const qLabel=()=>{ qBtn.textContent='Графика: '+Q().name+(fpsVal?' · '+fpsVal+' к/с':''); };
+qBtn.onclick=()=>{ cfg.q=(cfg.q+1)%QLEVELS.length; saveCfg(); applyQuality(true); autoDrops=99; qLabel(); };
+qLabel();
 // сенсорные кнопки → те же клавиши, что и на клавиатуре
 document.querySelectorAll('.tk').forEach(btn=>{ const k=btn.getAttribute('data-k');
   const on=e=>{ e.preventDefault(); keys[k]=true; btn.classList.add('act'); };
@@ -1518,16 +1551,25 @@ document.querySelectorAll('.tk').forEach(btn=>{ const k=btn.getAttribute('data-k
 //  Цикл (фиксированный шаг физики)
 // ==========================================================================
 let last=performance.now(), acc=0; const STEP=1/120;
+let fpsN=0, fpsT=0, fpsLow=0, autoDrops=0;
 function loop(now){
   let dt=(now-last)/1000; last=now; if(dt>0.1)dt=0.1;
+  // счётчик кадров + защита: если тормозит две секунды подряд, сами снижаем графику
+  fpsN++; if(!fpsT) fpsT=now;
+  if(now-fpsT>1000){
+    fpsVal=Math.round(fpsN*1000/(now-fpsT)); fpsN=0; fpsT=now; qLabel();
+    if(mode==='play' && fpsVal<34){ fpsLow++; } else fpsLow=0;
+    if(fpsLow>=2 && cfg.q>0 && autoDrops<2){ autoDrops++; fpsLow=0; cfg.q--; saveCfg(); applyQuality(true); qLabel(); }
+  }
   if(mode==='play'){ acc+=dt; let n=0; while(acc>=STEP&&n<8){ if(!panelOpen) stepPhysics(STEP); acc-=STEP;n++;} updatePlay(dt); }
   else { updateGarage(dt); }
   updateSmoke(dt);
   if(useBloom) composer.render(); else renderer.render(scene,camera);
   requestAnimationFrame(loop);
 }
-addEventListener('resize',()=>{ camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth,innerHeight); composer.setSize(innerWidth,innerHeight); bloomPass.setSize(innerWidth,innerHeight); });
+addEventListener('resize',()=>{ camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); applyQuality(false); bloomPass.setSize(innerWidth,innerHeight); });
 
+applyQuality(false);
 document.getElementById('loader').style.display='none';
 requestAnimationFrame(loop);
 </script>
