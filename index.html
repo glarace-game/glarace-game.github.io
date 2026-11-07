@@ -508,25 +508,46 @@ function buildTrack(conf) {
   };
   rail(1); rail(-1);
 
-  // ---------- грунтовка от проёма к арке фермы ----------
-  const gx0=TPx[gi]+TPnx[gi]*gSide*halfW, gz0=TPz[gi]+TPnz[gi]*gSide*halfW;
-  const ddx=farmEntryTrig.x-gx0, ddz=farmEntryTrig.z-gz0, dlen=Math.hypot(ddx,ddz);
-  if(dlen>4){
+  // ---------- съезд на ферму: плавный поворот, а не выезд из середины ----------
+  // Грунтовка отходит от дороги по касательной и дугой уходит к арке.
+  {
+    const at=(j,off)=>{ const k=((j%(STEPS+1))+STEPS+1)%(STEPS+1);
+      return new THREE.Vector3(TPx[k]+TPnx[k]*gSide*off, 0, TPz[k]+TPnz[k]*gSide*off); };
+    const A=at(gi-gHalf, halfW+1.0);            // начало съезда — ещё у кромки
+    const B=at(gi,       halfW+5.0);            // отходим от дороги
+    const C=at(gi+gHalf, halfW+17);             // разворачиваемся к ферме
+    const D=new THREE.Vector3(farmEntryTrig.x,0,farmEntryTrig.z);
+    const Cm=C.clone().lerp(D,0.35);
+    const dcur=new THREE.CatmullRomCurve3([A,B,Cm,D], false, 'centripetal', 0.5);
+    const DN=56, dpts=[]; for(let i=0;i<=DN;i++) dpts.push(dcur.getPoint(i/DN));
+    TP.dirt=dpts.map(p=>({x:p.x,z:p.z}));       // по этим точкам запрещаем деревья и камни
+
     const dc=cnv(64,64), dg=dc.getContext('2d');
     dg.fillStyle='#8b6f4e'; dg.fillRect(0,0,64,64);
     for(let i=0;i<500;i++){ const v2=90+Math.random()*60; dg.fillStyle=`rgba(${v2},${v2*0.78},${v2*0.55},.6)`; dg.fillRect(Math.random()*64,Math.random()*64,2,2); }
     dg.fillStyle='rgba(120,98,70,.7)'; dg.fillRect(14,0,6,64); dg.fillRect(44,0,6,64);   // колеи
     const dt2=new THREE.CanvasTexture(dc); dt2.wrapS=dt2.wrapT=THREE.RepeatWrapping; dt2.colorSpace=THREE.SRGBColorSpace;
-    dt2.repeat.set(1.4, dlen/7);
-    const road2=new THREE.Mesh(new THREE.PlaneGeometry(13,dlen+8),
-      new THREE.MeshStandardMaterial({map:dt2,roughness:1,metalness:0}));
-    road2.rotation.order='YXZ';
-    road2.rotation.y=Math.atan2(-ddx/dlen,-ddz/dlen); road2.rotation.x=-Math.PI/2;
-    road2.position.set((gx0+farmEntryTrig.x)/2,0.04,(gz0+farmEntryTrig.z)/2);
-    road2.receiveShadow=true; trackGroup.add(road2);
-    // указатель у съезда
-    const sg=signBoard('ФЕРМА \u2192','#3a2340');
-    sg.position.set(gx0+TPnx[gi]*gSide*2.5, 0, gz0+TPnz[gi]*gSide*2.5);
+    // лента грунтовки по кривой
+    const DW=6.5, dpos=[], duv=[], didx=[]; let dv=0;
+    for(let i=0;i<=DN;i++){
+      const p=dpts[i], pn=dpts[Math.min(i+1,DN)], pp=dpts[Math.max(i-1,0)];
+      const tx=pn.x-pp.x, tz=pn.z-pp.z, tl=Math.hypot(tx,tz)||1;
+      const nx=-tz/tl, nz=tx/tl;
+      if(i>0) dv+=Math.hypot(p.x-dpts[i-1].x,p.z-dpts[i-1].z)/7;
+      dpos.push(p.x+nx*DW,0.045,p.z+nz*DW, p.x-nx*DW,0.045,p.z-nz*DW);
+      duv.push(0,dv, 1,dv);
+    }
+    for(let i=0;i<DN;i++){ const a=i*2,b=i*2+1,c=(i+1)*2,d=(i+1)*2+1; didx.push(a,b,c, b,d,c); }
+    const dgeo=new THREE.BufferGeometry();
+    dgeo.setAttribute('position', new THREE.Float32BufferAttribute(dpos,3));
+    dgeo.setAttribute('uv', new THREE.Float32BufferAttribute(duv,2));
+    dgeo.setIndex(didx); dgeo.computeVertexNormals();
+    const droad=new THREE.Mesh(dgeo, new THREE.MeshStandardMaterial({map:dt2,roughness:1,metalness:0,side:THREE.DoubleSide}));
+    droad.receiveShadow=true; trackGroup.add(droad);
+    // указатель перед съездом, повёрнут к едущему
+    const sp=at(gi-gHalf-6, halfW+3.2);
+    const sg=signBoard('ФЕРМА →','#3a2340');
+    sg.position.set(sp.x,0,sp.z);
     sg.rotation.y=Math.atan2(-TPnx[gi]*gSide,-TPnz[gi]*gSide);
     trackGroup.add(sg);
   }
@@ -767,6 +788,7 @@ function buildTraffic(){
       t: 0.05+(i/N)*0.45,                              // все стоят ВПЕРЕДИ старта
       x:0, z:0, dx:1, dz:0 });
   }
+  updateTraffic(0);          // сразу расставить по трассе, иначе стоят кучей в центре карты
 }
 // машину, отставшую от нас, переносим далеко вперёд — чтобы никто не появлялся сзади
 function trafficRespawn(v, pt){
@@ -837,6 +859,17 @@ function buildTrees() {
     return best; };
   const onTrack=(x,z)=> d2track(x,z) < 20*20;
   const nearPond=(x,z)=> (x-34)*(x-34)+(z-22)*(z-22) < 20*20;
+  // где ничего не сажаем: площадка гаража в центре, грунтовка к ферме и сама арка
+  const DB=(TP&&TP.dirt)?(()=>{ let x0=1e9,x1=-1e9,z0=1e9,z1=-1e9;
+      for(const d of TP.dirt){ if(d.x<x0)x0=d.x; if(d.x>x1)x1=d.x; if(d.z<z0)z0=d.z; if(d.z>z1)z1=d.z; }
+      return {x0:x0-12,x1:x1+12,z0:z0-12,z1:z1+12}; })():null;
+  const onDirt=(x,z)=>{
+    if(x*x+z*z < 27*27) return true;                                   // вид гаража
+    const dx=x-farmEntryTrig.x, dz=z-farmEntryTrig.z;
+    if(dx*dx+dz*dz < 20*20) return true;                               // площадка у арки
+    if(!DB || x<DB.x0 || x>DB.x1 || z<DB.z0 || z>DB.z1) return false;  // быстрый отсев
+    for(const d of TP.dirt){ const ax=x-d.x, az=z-d.z; if(ax*ax+az*az < 12*12) return true; }
+    return false; };
   const m=new THREE.Matrix4(), q=new THREE.Quaternion(), pos=new THREE.Vector3(), scl=new THREE.Vector3(), col=new THREE.Color();
   const upY=a=>{ q.setFromAxisAngle(new THREE.Vector3(0,1,0), a); return q; };
   const flag=im=>{ if(im.instanceColor) im.instanceColor.needsUpdate=true; im.instanceMatrix.needsUpdate=true; };
@@ -877,7 +910,7 @@ function buildTrees() {
   const addTree=(x,z,isCon,s,minD)=>{
     if(it>=NT) return false;
     const md=minD||20, dt=d2track(x,z);
-    if(dt<md*md || nearPond(x,z)) return false;
+    if(dt<md*md || nearPond(x,z) || onDirt(x,z)) return false;
     const k=it&1, cn=isCon?ccn:cdn, cf=isCon?ccf:cdf;
     const useNear = dt<55*55 && cn[k]<CAPN && tn<CAPN;
     if(!useNear && (cf[k]>=CAPF || tf>=NT)) return false;
@@ -937,7 +970,7 @@ function buildTrees() {
     const c=trackCenters[(Math.random()*nC)|0]; if(!c) break;
     const a=Math.random()*Math.PI*2, r=24+Math.random()*140;
     const x=c.x+Math.cos(a)*r, z=c.y+Math.sin(a)*r;
-    if(onTrack(x,z)||nearPond(x,z)) continue;
+    if(onTrack(x,z)||nearPond(x,z)||onDirt(x,z)) continue;
     if(secAt(x,z)==='поле' && Math.random()<0.8) continue;
     const gy=terrainHeight(x,z),sc=0.7+Math.random(); upY(Math.random()*6);
     col.setHSL(0.25+Math.random()*0.09,0.30,0.48+Math.random()*0.14); setT(bushes,ib,x,gy+0.75*sc,z,sc,col); ib++; }
@@ -951,7 +984,7 @@ function buildTrees() {
     const c=trackCenters[(Math.random()*nC)|0]; if(!c) break;
     const a=Math.random()*Math.PI*2, r=14+Math.random()*120;
     const x=c.x+Math.cos(a)*r, z=c.y+Math.sin(a)*r;
-    if(onTrack(x,z)||nearPond(x,z)) continue;
+    if(onTrack(x,z)||nearPond(x,z)||onDirt(x,z)) continue;
     const field=secAt(x,z)==='поле';
     const gy=terrainHeight(x,z), sc=(field?0.9:0.6)+Math.random()*(field?1.1:0.9); upY(Math.random()*6);
     if(field) col.setHSL(0.13+Math.random()*0.06,0.42,0.56+Math.random()*0.14);
@@ -970,7 +1003,7 @@ function buildTrees() {
   const smallG=new THREE.DodecahedronGeometry(0.8,0), NR=IS_MOBILE?40:70;
   const rocks=new THREE.InstancedMesh(smallG,rockM,NR); let ir=0; tries=0;
   while(ir<NR && tries<NR*25){ tries++; const a=Math.random()*Math.PI*2,d=40+Math.random()*660,x=Math.cos(a)*d,z=Math.sin(a)*d;
-    if(onTrack(x,z)) continue; const gy=terrainHeight(x,z),sc=0.5+Math.random()*1.2;
+    if(onTrack(x,z)||onDirt(x,z)) continue; const gy=terrainHeight(x,z),sc=0.5+Math.random()*1.2;
     setR(rocks,ir,x,gy+0.3*sc,z,sc,sc*0.7,sc,Math.random()*6,granite(false)); ir++; }
   rocks.count=ir; flag(rocks); treesGroup.add(rocks);
 
@@ -982,7 +1015,7 @@ function buildTrees() {
     const c=trackCenters[(Math.random()*nC)|0]; if(!c) break;
     const a=Math.random()*Math.PI*2, r=24+Math.random()*150;
     const x=c.x+Math.cos(a)*r, z=c.y+Math.sin(a)*r;
-    if(onTrack(x,z)||nearPond(x,z)) continue;
+    if(onTrack(x,z)||nearPond(x,z)||onDirt(x,z)) continue;
     const rocky=secAt(x,z)==='скалы';
     if(!rocky && Math.random()<0.75) continue;                 // вне скал валуны редки
     const gy=terrainHeight(x,z), sx=(rocky?1.4:0.9)+Math.random()*(rocky?2.2:1.2);
@@ -1007,13 +1040,18 @@ function buildTrees() {
           // высота стенки гуляет волной — не ровный забор, а скала
           const w=0.55+0.45*Math.sin(ph+j*0.45)+0.2*Math.sin(ph*2+j*1.3);
           if(w<0.25) continue;                                  // здесь скала сходит на нет
-          const h=2.6+w*5.0, base=TP.halfW+2.6+Math.random()*1.2;
-          const x=TP.x[st]+nx*base, z=TP.z[st]+nz*base, gy=terrainHeight(x,z);
-          setR(wrock,iw,x,gy+h*0.30,z, 2.0+Math.random()*1.6, h*0.62, 2.4+Math.random()*1.8, Math.random()*6, granite(true)); iw++;
+          const h=2.6+w*5.0, sx=2.0+Math.random()*1.6;
+          // отбойник стоит на halfW+2.2 — камень ставим ЗА ним, с запасом на свой радиус
+          const base=TP.halfW+3.4+sx+Math.random()*1.2;
+          const x=TP.x[st]+nx*base, z=TP.z[st]+nz*base;
+          if(onDirt(x,z)) continue;
+          const gy=terrainHeight(x,z);
+          setR(wrock,iw,x,gy+h*0.30,z, sx, h*0.62, 2.4+Math.random()*1.8, Math.random()*6, granite(true)); iw++;
           // второй ряд позади — глубина скалы
           if(iw<NW && Math.random()<0.7){
-            const b2=base+2.8+Math.random()*2.2, x2=TP.x[st]+nx*b2, z2=TP.z[st]+nz*b2;
-            setR(wrock,iw,x2,terrainHeight(x2,z2)+h*0.42,z2, 2.6+Math.random()*2.0, h*0.85, 3.0+Math.random()*2.2, Math.random()*6, granite(false)); iw++;
+            const sx2=2.6+Math.random()*2.0, b2=base+sx+sx2*0.7+Math.random()*1.6;
+            const x2=TP.x[st]+nx*b2, z2=TP.z[st]+nz*b2;
+            if(!onDirt(x2,z2)) { setR(wrock,iw,x2,terrainHeight(x2,z2)+h*0.42,z2, sx2, h*0.85, 3.0+Math.random()*2.2, Math.random()*6, granite(false)); iw++; }
           }
         }
       }
@@ -1085,15 +1123,15 @@ function buildCar(){
   const [cw,ch,cl,cz]=mdl.cabin;
   const cabin=new THREE.Mesh(new THREE.BoxGeometry(cw,ch,cl), paint);
   cabin.position.set(0, body.position.y+bh/2+ch/2-0.02, cz); cabin.castShadow=true; car.add(cabin);
-  const win=new THREE.Mesh(new THREE.BoxGeometry(cw+0.02,ch*0.8,cl*0.86), glass);
-  win.position.copy(cabin.position); car.add(win);
-
-  // спорт-силуэт: скошенное лобовое и заднее стекло + заниженный нос
-  const topY=cabin.position.y+ch/2, hoodY=body.position.y+bh/2;
-  const ws=new THREE.Mesh(new THREE.BoxGeometry(cw*0.94,0.05,Math.min(1.05,Math.max(0.8,ch*1.3))), glass);
-  ws.position.set(0,(topY+hoodY)/2+0.02, cz+cl/2+0.18); ws.rotation.x=-1.0; car.add(ws);     // лобовое
-  const bw2=new THREE.Mesh(new THREE.BoxGeometry(cw*0.94,0.05,Math.min(0.95,Math.max(0.7,ch*1.15))), glass);
-  bw2.position.set(0,(topY+hoodY)/2+0.02, cz-cl/2-0.16); bw2.rotation.x=0.95; car.add(bw2);   // заднее
+  // остекление: ровная лента стекла по кругу кабины, крыша остаётся в цвет кузова
+  const win=new THREE.Mesh(new THREE.BoxGeometry(cw+0.03,ch*0.58,cl*0.94), glass);
+  win.position.set(0, cabin.position.y-ch*0.1, cz); car.add(win);
+  // стойки по углам — чтобы стекло читалось лентой, а не аквариумом
+  const pil=new THREE.MeshStandardMaterial({color:'#101319',roughness:.5,metalness:.3});
+  for(const sx of [-cw/2+0.03, cw/2-0.03]) for(const sz of [cl/2-0.05, -cl/2+0.05]){
+    const pl=new THREE.Mesh(new THREE.BoxGeometry(0.07,ch*0.62,0.08),pil);
+    pl.position.set(sx, cabin.position.y-ch*0.1, cz+sz); car.add(pl);
+  }
   const nose=new THREE.Mesh(new THREE.BoxGeometry(bw*0.92,bh*0.6,0.7), paint);
   nose.position.set(0, body.position.y-bh*0.16, bl/2-0.12); nose.rotation.x=0.14; car.add(nose); // заниженный нос
 
@@ -1424,7 +1462,7 @@ function updateGarage(dt){
 let mode='garage';
 const garageEl=document.getElementById('garage'), hudEl=document.getElementById('hud'),
       topEl=document.getElementById('topbtns'), helpEl=document.getElementById('help');
-function toGarage(){ mode='garage'; garageEl.style.display='flex'; hudEl.style.display='none';
+function toGarage(){ mode='garage'; garageEl.style.display='flex'; hudEl.style.display='none'; trafficGroup.visible=false;
   topEl.style.display='none'; helpEl.style.display='none'; fxEl.style.display='none'; touchWrap.style.display='none'; audioMaster(0); }
 function toPlay(){ mode='play'; place='track'; placeCenter={x:0,z:0}; placeRadius=290;
   T=tuned(); buildCar(); disposeGroup(farmGroup);
